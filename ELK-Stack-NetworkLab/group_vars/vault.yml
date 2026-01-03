@@ -1,0 +1,181 @@
+---
+# Ansible Vault Example - Copy to vault.yml and encrypt
+# 
+# USAGE:
+# 1. Copy this file: cp vault.yml.example vault.yml
+# 2. Fill in your actual values (replace all CHANGE_ME_* placeholders)
+# 3. Encrypt: ansible-vault encrypt vault.yml
+# 4. Edit later: ansible-vault edit vault.yml
+#
+# IMPORTANT: Never commit vault.yml to Git!
+# Add to .gitignore: echo "vault.yml" >> .gitignore
+
+# ==========================================
+# Elasticsearch Passwords
+# ==========================================
+
+# Main elastic superuser password
+# Generate strong password: openssl rand -base64 32
+vault_elasticsearch_password: "CHANGE_ME_elastic_password_here_min_16_chars"
+
+# Kibana system user password
+vault_kibana_system_password: "CHANGE_ME_kibana_system_password"
+
+# Logstash system user password (for monitoring)
+vault_logstash_system_password: "CHANGE_ME_logstash_system_password"
+
+# Logstash writer user password (for indexing)
+vault_logstash_writer_password: "CHANGE_ME_logstash_writer_password"
+
+# Beats system user password
+vault_beats_system_password: "CHANGE_ME_beats_system_password"
+
+# Remote monitoring user password
+vault_remote_monitoring_user_password: "CHANGE_ME_monitoring_password"
+
+# ==========================================
+# Kibana Encryption Keys
+# ==========================================
+
+# Generate random 32-character strings:
+# python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Main encryption key (32+ characters)
+vault_kibana_encryption_key: "CHANGE_ME_32_character_random_string_here"
+
+# Saved objects encryption key (32+ characters)
+vault_kibana_saved_objects_encryption_key: "CHANGE_ME_another_32_char_string"
+
+# Reporting encryption key (32+ characters)
+vault_kibana_reporting_encryption_key: "CHANGE_ME_yet_another_32_char_string"
+
+# Service token for Kibana to connect to Elasticsearch
+# Generated automatically during deployment, or create manually:
+# POST /_security/service/elastic/kibana/credential/token/kibana_token
+vault_kibana_service_token: "CHANGE_ME_will_be_generated_during_deployment"
+
+# ==========================================
+# Network Device Credentials
+# ==========================================
+
+# Network device SSH username
+vault_network_username: "CHANGE_ME_network_admin_username"
+
+# Network device SSH password
+vault_network_password: "CHANGE_ME_network_admin_password"
+
+# Network device enable password
+vault_network_enable_password: "CHANGE_ME_enable_password"
+
+# SNMP Read-Only community string
+vault_snmp_ro_community: "CHANGE_ME_snmp_community"
+
+# SNMP Read-Write community string (if needed)
+vault_snmp_rw_community: "CHANGE_ME_snmp_rw_community"
+
+# ==========================================
+# Backup & Storage Credentials
+# ==========================================
+
+# S3 Access Key (if using S3 for snapshots)
+vault_s3_access_key: "CHANGE_ME_aws_access_key"
+
+# S3 Secret Key
+vault_s3_secret_key: "CHANGE_ME_aws_secret_key"
+
+# S3 Bucket name for backups
+vault_s3_bucket: "CHANGE_ME_elk-backups-prod"
+
+# S3 Region
+vault_s3_region: "us-east-1"
+
+# MinIO credentials (if using MinIO instead of S3)
+vault_minio_access_key: "CHANGE_ME_minio_access_key"
+vault_minio_secret_key: "CHANGE_ME_minio_secret_key"
+vault_minio_endpoint: "https://minio.yourdomain.com"
+
+# ==========================================
+# LDAP/Active Directory (if used)
+# ==========================================
+
+# LDAP bind DN password
+vault_ldap_bind_password: "CHANGE_ME_ldap_service_account_password"
+
+# LDAP bind DN user
+vault_ldap_bind_dn: "cn=elasticsvc,ou=services,dc=yourdomain,dc=com"
+
+# ==========================================
+# SSL/TLS Certificate Passwords (if any)
+# ==========================================
+
+# Certificate keystore password (if using Java keystores)
+vault_keystore_password: "CHANGE_ME_keystore_password"
+
+# Certificate truststore password
+vault_truststore_password: "CHANGE_ME_truststore_password"
+
+# ==========================================
+# External Service API Keys
+# ==========================================
+
+# PagerDuty integration key (for alerting)
+vault_pagerduty_key: "CHANGE_ME_pagerduty_integration_key"
+
+# Slack webhook URL (for notifications)
+vault_slack_webhook_url: "https://hooks.slack.com/services/CHANGE_ME"
+
+# Email server password (for alert emails)
+vault_smtp_password: "CHANGE_ME_smtp_password"
+vault_smtp_username: "CHANGE_ME_smtp_username"
+vault_smtp_server: "smtp.gmail.com"
+vault_smtp_port: "587"
+
+# ==========================================
+# Additional Users (Create as needed)
+# ==========================================
+
+# Example application user
+vault_app_user_password: "CHANGE_ME_application_password"
+
+# Example read-only analyst user
+vault_analyst_user_password: "CHANGE_ME_analyst_password"
+
+# Example security team user
+vault_security_user_password: "CHANGE_ME_security_password"
+
+# ==========================================
+# Database Passwords (if using external DB)
+# ==========================================
+
+# PostgreSQL password (if using for Kibana state)
+vault_postgresql_password: "CHANGE_ME_postgres_password"
+
+# MySQL/MariaDB password (if needed)
+vault_mysql_password: "CHANGE_ME_mysql_password"
+
+# ==========================================
+# Notes
+# ==========================================
+# 
+# PASSWORD REQUIREMENTS:
+# - Minimum 16 characters
+# - Include: uppercase, lowercase, numbers, symbols
+# - No dictionary words
+# - Rotate every 90 days
+#
+# ENCRYPTION KEY REQUIREMENTS:
+# - Minimum 32 characters
+# - Use cryptographically random generation
+# - Never reuse keys across environments
+#
+# STORAGE:
+# - Store vault password in password manager
+# - Keep backup of vault password in secure location
+# - Document vault password recovery procedure
+#
+# SECURITY:
+# - Never commit unencrypted vault.yml to version control
+# - Never share vault password over insecure channels
+# - Audit access to vault password regularly
+# - Consider using HashiCorp Vault for production
+#

@@ -1,5 +1,7 @@
 # ELK Stack NetworkLab Project
 
+![Network Topology](ELK-Stack-NetworkLab/IMAGE/TOPO.png)
+
 ## Overview
 This project sets up an **ELK Stack** (Elasticsearch, Logstash, Kibana) for a NetworkLab environment. It centralizes syslogs to enable **predictive failure detection** and more efficient troubleshooting. Deployment is automated with **Ansible** or **Puppet**.
 
@@ -28,3 +30,4 @@ This project sets up an **ELK Stack** (Elasticsearch, Logstash, Kibana) for a Ne
 git clone <repository_url>
 cd <project_directory>
 ansible-playbook -i inventory elk_setup.yml
+

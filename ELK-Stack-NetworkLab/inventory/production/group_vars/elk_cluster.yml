@@ -1,0 +1,60 @@
+```yaml
+---
+# Elasticsearch Cluster Configuration
+elasticsearch_cluster_name: networklab-production
+elasticsearch_discovery_seed_hosts:
+  - elk-master-01:9300
+  - elk-master-02:9300
+  - elk-master-03:9300
+
+elasticsearch_cluster_initial_master_nodes:
+  - elk-master-01
+  - elk-master-02
+  - elk-master-03
+
+# Memory Settings
+elasticsearch_heap_size_min: 16g
+elasticsearch_heap_size_max: 16g
+
+# Network Settings
+elasticsearch_network_host: 0.0.0.0
+elasticsearch_http_host: 0.0.0.0
+elasticsearch_publish_host: "{{ ansible_default_ipv4.address }}"
+
+# Security Settings
+xpack_security_enabled: true
+xpack_security_transport_ssl_enabled: true
+xpack_security_http_ssl_enabled: true
+xpack_security_audit_enabled: true
+
+# Monitoring
+xpack_monitoring_enabled: true
+xpack_monitoring_collection_enabled: true
+
+# Machine Learning
+xpack_ml_enabled: true
+xpack_ml_max_machine_memory_percent: 30
+
+# Index Lifecycle Management
+ilm_enabled: true
+ilm_default_rollover_size: 50gb
+ilm_default_rollover_age: 7d
+ilm_hot_phase_age: 3d
+ilm_warm_phase_age: 7d
+ilm_cold_phase_age: 30d
+ilm_delete_phase_age: 90d
+
+# Snapshot Configuration
+snapshot_repo_type: s3
+snapshot_repo_bucket: elk-backups-prod
+snapshot_repo_region: us-east-1
+snapshot_compress: true
+snapshot_chunk_size: 1gb
+
+# Performance
+indices_memory_index_buffer_size: 15%
+indices_fielddata_cache_size: 25%
+indices_queries_cache_size: 10%
+thread_pool_search_queue_size: 10000
+thread_pool_write_queue_size: 10000
+```

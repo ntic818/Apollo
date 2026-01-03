@@ -1,0 +1,101 @@
+```yaml
+---
+- name: Comprehensive health check
+  hosts: localhost
+  gather_facts: false
+  vars:
+    elasticsearch_url: "https://{{ groups['elk_ingest'][0] }}:9200"
+    kibana_url: "https://{{ groups['kibana_servers'][0] }}:5601"
+  tasks:
+    - name: Check Elasticsearch cluster health
+      uri:
+        url: "{{ elasticsearch_url }}/_cluster/health"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: es_health
+
+    - name: Display cluster health
+      debug:
+        var: es_health.json
+
+    - name: Assert cluster is healthy
+      assert:
+        that:
+          - es_health.json.status in ['yellow', 'green']
+          - es_health.json.number_of_nodes >= 3
+        fail_msg: "Cluster is not healthy!"
+        success_msg: "Cluster is healthy ✓"
+
+    - name: Check node roles
+      uri:
+        url: "{{ elasticsearch_url }}/_cat/nodes?v&h=name,node.role,master"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: es_nodes
+
+    - name: Display nodes
+      debug:
+        var: es_nodes.content
+
+    - name: Check indices
+      uri:
+        url: "{{ elasticsearch_url }}/_cat/indices?v"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: es_indices
+
+    - name: Display indices
+      debug:
+        var: es_indices.content
+
+    - name: Check Kibana status
+      uri:
+        url: "{{ kibana_url }}/api/status"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: kibana_status
+
+    - name: Display Kibana status
+      debug:
+        var: kibana_status.json
+
+    - name: Test syslog ingestion
+      uri:
+        url: "{{ elasticsearch_url }}/syslog-*/_search"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: syslog_test
+
+    - name: Display syslog count
+      debug:
+        msg: "Syslog documents: {{ syslog_test.json.hits.total.value }}"
+
+    - name: Health check summary
+      debug:
+        msg:
+          - "========================================="
+          - "Health Check Complete!"
+          - "========================================="
+          - "Cluster Status: {{ es_health.json.status }}"
+          - "Nodes: {{ es_health.json.number_of_nodes }}"
+          - "Active Shards: {{ es_health.json.active_shards }}"
+          - "Kibana Status: {{ kibana_status.json.status.overall.state }}"
+          - "========================================="
+```
+
+---

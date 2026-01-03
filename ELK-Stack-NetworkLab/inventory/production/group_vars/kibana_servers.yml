@@ -1,0 +1,53 @@
+```yaml
+---
+kibana_version: "{{ elk_version }}"
+
+# Kibana configuration
+kibana_server_host: "0.0.0.0"
+kibana_server_port: "{{ kibana_port }}"
+kibana_server_name: "{{ ansible_hostname }}"
+kibana_server_publicBaseUrl: "https://kibana.{{ domain }}"
+
+# Elasticsearch connection
+kibana_elasticsearch_hosts:
+  - "https://elk-ingest-01:9200"
+  - "https://elk-ingest-02:9200"
+
+kibana_elasticsearch_username: kibana_system
+kibana_elasticsearch_serviceAccountToken: "{{ vault_kibana_service_token }}"
+
+# Security
+kibana_security_enabled: true
+kibana_encryption_key: "{{ vault_kibana_encryption_key }}"
+kibana_reporting_encryption_key: "{{ vault_kibana_reporting_encryption_key }}"
+kibana_saved_objects_encryption_key: "{{ vault_kibana_saved_objects_encryption_key }}"
+
+# TLS
+kibana_server_ssl_enabled: true
+kibana_server_ssl_certificate: /etc/kibana/certs/kibana.crt
+kibana_server_ssl_key: /etc/kibana/certs/kibana.key
+
+# Monitoring
+kibana_monitoring_enabled: true
+kibana_monitoring_ui_enabled: true
+
+# Alerting
+kibana_alert_history_enabled: true
+kibana_alert_history_duration: 30d
+
+# Session
+kibana_session_timeout: 8h
+kibana_session_cleanup_interval: 1h
+
+# Logging
+kibana_logging_dest: file
+kibana_logging_rotate_enabled: true
+kibana_logging_rotate_size: 100m
+kibana_logging_rotate_keep_files: 7
+
+# Features
+kibana_telemetry_enabled: false
+kibana_xpack_reporting_enabled: true
+kibana_xpack_canvas_enabled: true
+kibana_xpack_maps_enabled: true
+```

@@ -1,0 +1,63 @@
+```yaml
+---
+# Master playbook for complete ELK Stack deployment
+- name: Pre-flight checks
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Verify Ansible version
+      assert:
+        that: ansible_version.full is version('2.15.0', '>=')
+        fail_msg: "Ansible 2.15+ required"
+
+    - name: Check Python version
+      assert:
+        that: ansible_python_version is version('3.9', '>=')
+        fail_msg: "Python 3.9+ required"
+
+- name: Deploy common configuration
+  import_playbook: common.yml
+
+- name: Generate and distribute certificates
+  import_playbook: certificates.yml
+
+- name: Deploy Elasticsearch cluster
+  import_playbook: elk_cluster.yml
+
+- name: Deploy Logstash servers
+  import_playbook: logstash.yml
+
+- name: Deploy Kibana servers
+  import_playbook: kibana.yml
+
+- name: Deploy monitoring agents
+  import_playbook: monitoring.yml
+
+- name: Configure network devices
+  import_playbook: network_devices.yml
+
+- name: Import observability assets
+  import_playbook: observability.yml
+
+- name: Configure backups
+  import_playbook: backup.yml
+
+- name: Health check
+  import_playbook: health_check.yml
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Display deployment summary
+      debug:
+        msg:
+          - "========================================="
+          - "ELK Stack Deployment Complete!"
+          - "========================================="
+          - "Elasticsearch Cluster: https://{{ groups['elk_ingest'][0] }}:9200"
+          - "Kibana: https://{{ groups['kibana_servers'][0] }}:5601"
+          - "Username: elastic"
+          - "Password: Check vault.yml"
+          - "========================================="
+```

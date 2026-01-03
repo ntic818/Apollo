@@ -1,0 +1,38 @@
+```yaml
+---
+# Syslog configuration
+syslog_server: 10.0.1.51  # Primary Logstash
+syslog_server_backup: 10.0.1.52  # Secondary Logstash
+syslog_port: 514
+syslog_protocol: udp
+syslog_facility: local0
+syslog_severity: informational
+
+# Logging settings
+logging_buffered_size: 51200
+logging_console_level: warnings
+logging_monitor_level: warnings
+logging_trap_level: informational
+
+# SNMP configuration
+snmp_community: "{{ vault_snmp_ro_community }}"
+snmp_location: "DataCenter-1"
+snmp_contact: "netops@yourdomain.com"
+
+# NTP configuration
+ntp_servers:
+  - 10.0.0.1
+  - 10.0.0.2
+
+# DNS configuration
+dns_servers:
+  - 10.0.0.3
+  - 10.0.0.4
+
+# Device credentials
+ansible_user: "{{ vault_network_username }}"
+ansible_password: "{{ vault_network_password }}"
+ansible_become_password: "{{ vault_network_enable_password }}"
+```
+
+---

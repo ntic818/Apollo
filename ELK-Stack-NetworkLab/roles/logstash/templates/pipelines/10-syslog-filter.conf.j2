@@ -1,0 +1,64 @@
+```
+filter {
+  if [type] == "syslog" {
+    # Parse syslog format
+    grok {
+      match => {
+        "message" => [
+          "%{SYSLOGTIMESTAMP:syslog_timestamp} %{SYSLOGHOST:syslog_hostname} %{DATA:syslog_program}(?:\[%{POSINT:syslog_pid}\])?: %{GREEDYDATA:syslog_message}",
+          "%{SYSLOGTIMESTAMP:syslog_timestamp} %{SYSLOGHOST:syslog_hostname} %{GREEDYDATA:syslog_message}"
+        ]
+      }
+      add_field => { "[@metadata][beat]" => "syslog" }
+      add_field => { "[@metadata][type]" => "doc" }
+    }
+
+    # Parse timestamp
+    date {
+      match => [ "syslog_timestamp", "MMM  d HH:mm:ss", "MMM dd HH:mm:ss" ]
+      timezone => "UTC"
+      target => "@timestamp"
+    }
+
+    # Extract severity
+    if [syslog_message] =~ /^%[A-Z]+/ {
+      grok {
+        match => { "syslog_message" => "^%(?<facility>[A-Z]+)-(?<severity>[0-9])-(?<mnemonic>[A-Z_]+): %{GREEDYDATA:event_message}" }
+      }
+    }
+
+    # Categorize events
+    if [mnemonic] =~ /UPDOWN|LINK/ {
+      mutate { add_tag => ["interface_event"] }
+    }
+    if [mnemonic] =~ /AUTH|LOGIN/ {
+      mutate { add_tag => ["security_event"] }
+    }
+    if [severity] and [severity] =~ /[0-3]/ {
+      mutate { add_tag => ["critical_event"] }
+    }
+
+    # GeoIP enrichment for source IPs
+    if [source_ip] {
+      geoip {
+        source => "source_ip"
+        target => "geoip"
+      }
+    }
+
+    # Add processing metadata
+    mutate {
+      add_field => {
+        "[@metadata][index_prefix]" => "syslog"
+        "ingestion_timestamp" => "%{@timestamp}"
+        "logstash_node" => "%{HOSTNAME}"
+      }
+    }
+
+    # Remove temporary fields
+    mutate {
+      remove_field => [ "syslog_timestamp" ]
+    }
+  }
+}
+```

@@ -1,0 +1,33 @@
+```yaml
+# Logstash Configuration
+node.name: {{ ansible_hostname }}
+
+path.data: /var/lib/logstash
+path.logs: /var/log/logstash
+path.config: /etc/logstash/conf.d
+
+# Pipeline
+pipeline.workers: {{ logstash_pipeline_workers }}
+pipeline.batch.size: {{ logstash_pipeline_batch_size }}
+pipeline.batch.delay: {{ logstash_pipeline_batch_delay }}
+
+# Dead Letter Queue
+dead_letter_queue.enable: {{ logstash_dead_letter_queue_enabled }}
+dead_letter_queue.max_bytes: {{ logstash_dead_letter_queue_max_bytes }}
+
+# Monitoring
+xpack.monitoring.enabled: {{ logstash_monitoring_enabled }}
+xpack.monitoring.elasticsearch.hosts: {{ logstash_elasticsearch_hosts | to_json }}
+xpack.monitoring.elasticsearch.username: logstash_system
+xpack.monitoring.elasticsearch.password: {{ vault_logstash_system_password }}
+xpack.monitoring.elasticsearch.ssl.certificate_authority: /etc/logstash/certs/ca-cert.pem
+
+# API
+api.http.host: 0.0.0.0
+api.http.port: {{ logstash_http_port }}
+api.ssl.enabled: false
+
+# Logging
+log.level: {{ log_level }}
+slowlog.threshold.warn: {{ slow_log_threshold }}
+```

@@ -1,0 +1,29 @@
+```yaml
+---
+# Data node specific settings
+node_master: false
+node_data: true
+node_ingest: false
+
+# Memory
+elasticsearch_heap_size_min: 31g
+elasticsearch_heap_size_max: 31g
+bootstrap_memory_lock: true
+
+# Index settings
+index_number_of_shards: 3
+index_number_of_replicas: 1
+index_refresh_interval: 30s
+index_translog_durability: async
+index_translog_sync_interval: 30s
+
+# Query cache
+indices_queries_cache_size: 15%
+
+# Fielddata cache
+indices_fielddata_cache_size: 30%
+
+# Recovery settings
+indices_recovery_max_bytes_per_sec: 200mb
+cluster_routing_allocation_node_concurrent_recoveries: 4
+```

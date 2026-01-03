@@ -1,0 +1,22 @@
+```
+# Custom JVM options
+
+# Heap size
+-Xms{{ elasticsearch_heap_size_min }}
+-Xmx{{ elasticsearch_heap_size_max }}
+
+# GC logging
+-Xlog:gc*,gc+age=trace,safepoint:file={{ log_dir }}/gc.log:utctime,pid,tags:filecount=32,filesize=64m
+
+# Heap dumps
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath={{ data_dir }}
+
+# JVM fatal error logs
+-XX:ErrorFile={{ log_dir }}/hs_err_pid%p.log
+
+# Performance
+-XX:+UseG1GC
+-XX:G1ReservePercent=25
+-XX:InitiatingHeapOccupancyPercent=30
+```

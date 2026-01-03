@@ -1,0 +1,17 @@
+```yaml
+---
+elasticsearch_node_roles:
+  - master
+
+elasticsearch_heap_size_min: 4g
+elasticsearch_heap_size_max: 4g
+
+# Master-specific settings
+node_master: true
+node_data: false
+node_ingest: false
+node_ml: false
+
+# Minimal memory for master nodes
+bootstrap_memory_lock: true
+```

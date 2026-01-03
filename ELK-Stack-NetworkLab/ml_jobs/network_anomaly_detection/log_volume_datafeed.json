@@ -1,0 +1,29 @@
+```json
+{
+  "job_id": "network_log_volume_anomaly",
+  "indices": [
+    "syslog-*"
+  ],
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "match_all": {}
+        }
+      ]
+    }
+  },
+  "scroll_size": 1000,
+  "frequency": "300s",
+  "query_delay": "60s",
+  "chunking_config": {
+    "mode": "auto"
+  },
+  "delayed_data_check_config": {
+    "enabled": true,
+    "check_window": "900s"
+  }
+}
+```
+
+---

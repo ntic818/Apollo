@@ -1,0 +1,83 @@
+```yaml
+---
+- name: Deploy Elasticsearch Master Nodes
+  hosts: elk_masters
+  become: true
+  serial: 1
+  roles:
+    - common
+    - elasticsearch
+
+- name: Deploy Elasticsearch Ingest Nodes
+  hosts: elk_ingest
+  become: true
+  roles:
+    - common
+    - elasticsearch
+
+- name: Deploy Elasticsearch Hot Data Nodes
+  hosts: elk_data_hot
+  become: true
+  roles:
+    - common
+    - elasticsearch
+
+- name: Deploy Elasticsearch Warm Data Nodes
+  hosts: elk_data_warm
+  become: true
+  roles:
+    - common
+    - elasticsearch
+
+- name: Configure cluster settings
+  hosts: elk_masters[0]
+  become: true
+  tasks:
+    - name: Wait for cluster to be healthy
+      uri:
+        url: "https://localhost:9200/_cluster/health"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: cluster_health
+      until: cluster_health.json.status in ['yellow', 'green']
+      retries: 30
+      delay: 10
+
+    - name: Configure cluster settings
+      uri:
+        url: "https://localhost:9200/_cluster/settings"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          persistent:
+            cluster:
+              routing:
+                allocation:
+                  awareness:
+                    attributes: zone
+              max_shards_per_node: 3000
+            indices:
+              recovery:
+                max_bytes_per_sec: 200mb
+        validate_certs: false
+
+    - name: Create index templates
+      include_role:
+        name: elasticsearch
+        tasks_from: index_templates.yml
+
+    - name: Create ILM policies
+      include_role:
+        name: elasticsearch
+        tasks_from: ilm_policies.yml
+
+    - name: Configure snapshot repository
+      include_role:
+        name: backup
+        tasks_from: snapshot_repository.yml
+```

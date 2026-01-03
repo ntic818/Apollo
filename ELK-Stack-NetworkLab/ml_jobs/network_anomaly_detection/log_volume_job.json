@@ -1,0 +1,42 @@
+```json
+{
+  "description": "Detects anomalous increases in network log volume indicating potential issues",
+  "analysis_config": {
+    "bucket_span": "15m",
+    "detectors": [
+      {
+        "detector_description": "High count of logs per host",
+        "function": "high_count",
+        "by_field_name": "syslog_hostname",
+        "detector_index": 0
+      },
+      {
+        "detector_description": "Unusual log patterns",
+        "function": "rare",
+        "by_field_name": "mnemonic",
+        "detector_index": 1
+      }
+    ],
+    "influencers": [
+      "syslog_hostname",
+      "syslog_program",
+      "facility"
+    ]
+  },
+  "data_description": {
+    "time_field": "@timestamp",
+    "time_format": "epoch_ms"
+  },
+  "analysis_limits": {
+    "model_memory_limit": "512mb",
+    "categorization_examples_limit": 4
+  },
+  "model_plot_config": {
+    "enabled": true,
+    "annotations_enabled": true
+  },
+  "model_snapshot_retention_days": 10,
+  "daily_model_snapshot_retention_after_days": 1,
+  "results_index_name": "custom-network-anomalies"
+}
+```

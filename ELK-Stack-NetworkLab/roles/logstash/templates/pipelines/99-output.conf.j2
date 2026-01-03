@@ -1,0 +1,26 @@
+```
+output {
+  if [type] == "syslog" {
+    elasticsearch {
+      hosts => {{ logstash_elasticsearch_hosts | to_json }}
+      index => "syslog-%{+YYYY.MM.dd}"
+      user => "logstash_writer"
+      password => "{{ vault_logstash_writer_password }}"
+      ssl => true
+      cacert => "/etc/logstash/certs/ca-cert.pem"
+      ilm_enabled => true
+      ilm_rollover_alias => "syslog"
+      ilm_pattern => "{now/d}-000001"
+      ilm_policy => "syslog-policy"
+    }
+  }
+
+  # Dead letter queue for failed events
+  if [@metadata][dead_letter_queue] {
+    file {
+      path => "/var/log/logstash/failed_events_%{+YYYY_MM_dd}.log"
+      codec => json_lines
+    }
+  }
+}
+```

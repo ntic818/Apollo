@@ -1,0 +1,82 @@
+```yaml
+# ======================== Elasticsearch Configuration =========================
+#
+# Node
+cluster.name: {{ elasticsearch_cluster_name }}
+node.name: {{ inventory_hostname }}
+node.roles: {{ elasticsearch_node_roles | to_json }}
+
+# Paths
+path.data: {{ data_dir }}
+path.logs: {{ log_dir }}
+
+# Network
+network.host: {{ elasticsearch_network_host }}
+http.port: {{ elasticsearch_http_port }}
+transport.port: {{ elasticsearch_transport_port }}
+
+# Discovery
+discovery.seed_hosts: {{ elasticsearch_discovery_seed_hosts | to_json }}
+cluster.initial_master_nodes: {{ elasticsearch_cluster_initial_master_nodes | to_json }}
+
+# Memory
+bootstrap.memory_lock: {{ bootstrap_memory_lock | default(true) }}
+
+# Security
+xpack.security.enabled: {{ xpack_security_enabled }}
+xpack.security.enrollment.enabled: false
+
+xpack.security.http.ssl:
+  enabled: {{ xpack_security_http_ssl_enabled }}
+  certificate: /etc/elasticsearch/certs/node-cert.pem
+  key: /etc/elasticsearch/certs/node-key.pem
+  certificate_authorities: /etc/elasticsearch/certs/ca-cert.pem
+
+xpack.security.transport.ssl:
+  enabled: {{ xpack_security_transport_ssl_enabled }}
+  verification_mode: certificate
+  certificate: /etc/elasticsearch/certs/node-cert.pem
+  key: /etc/elasticsearch/certs/node-key.pem
+  certificate_authorities: /etc/elasticsearch/certs/ca-cert.pem
+
+# Audit logging
+xpack.security.audit.enabled: {{ xpack_security_audit_enabled }}
+xpack.security.audit.logfile.events.include:
+  - access_denied
+  - authentication_failed
+  - connection_denied
+  - tampered_request
+  - run_as_denied
+
+# Monitoring
+xpack.monitoring.collection.enabled: {{ xpack_monitoring_collection_enabled }}
+
+# Machine Learning
+xpack.ml.enabled: {{ xpack_ml_enabled }}
+{% if 'ml' in elasticsearch_node_roles %}
+xpack.ml.max_machine_memory_percent: {{ xpack_ml_max_machine_memory_percent }}
+{% endif %}
+
+# Index settings
+{% if 'data' in elasticsearch_node_roles or 'data_hot' in elasticsearch_node_roles or 'data_warm' in elasticsearch_node_roles %}
+indices.memory.index_buffer_size: {{ indices_memory_index_buffer_size }}
+indices.fielddata.cache.size: {{ indices_fielddata_cache_size }}
+indices.queries.cache.size: {{ indices_queries_cache_size }}
+{% endif %}
+
+# Thread pools
+thread_pool.search.queue_size: {{ thread_pool_search_queue_size | default(1000) }}
+thread_pool.write.queue_size: {{ thread_pool_write_queue_size | default(10000) }}
+
+# Recovery
+{% if 'data' in elasticsearch_node_roles or 'data_hot' in elasticsearch_node_roles %}
+indices.recovery.max_bytes_per_sec: {{ indices_recovery_max_bytes_per_sec }}
+cluster.routing.allocation.node_concurrent_recoveries: {{ cluster_routing_allocation_node_concurrent_recoveries | default(2) }}
+{% endif %}
+
+# Allocation awareness
+{% if zone is defined %}
+node.attr.zone: {{ zone }}
+cluster.routing.allocation.awareness.attributes: zone
+{% endif %}
+```

@@ -1,0 +1,58 @@
+```json
+{
+  "index_patterns": ["syslog-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 3,
+      "number_of_replicas": 1,
+      "refresh_interval": "30s",
+      "index.codec": "best_compression",
+      "index.lifecycle.name": "syslog-policy",
+      "index.lifecycle.rollover_alias": "syslog"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "syslog_hostname": {
+          "type": "keyword",
+          "fields": {
+            "text": { "type": "text" }
+          }
+        },
+        "syslog_program": { "type": "keyword" },
+        "syslog_pid": { "type": "integer" },
+        "syslog_message": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "facility": { "type": "keyword" },
+        "severity": { "type": "byte" },
+        "mnemonic": { "type": "keyword" },
+        "event_message": { "type": "text" },
+        "source_ip": { "type": "ip" },
+        "destination_ip": { "type": "ip" },
+        "interface": { "type": "keyword" },
+        "geoip": {
+          "properties": {
+            "location": { "type": "geo_point" },
+            "country_name": { "type": "keyword" },
+            "city_name": { "type": "keyword" }
+          }
+        },
+        "tags": { "type": "keyword" },
+        "logstash_node": { "type": "keyword" }
+      }
+    }
+  },
+  "priority": 200,
+  "version": 1,
+  "_meta": {
+    "description": "Template for network syslog data"
+  }
+}
+```

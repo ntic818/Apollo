@@ -1,0 +1,16 @@
+MIT License - See [LICENSE](LICENSE)
+
+## Roadmap
+
+- [ ] Kubernetes deployment (Helm charts)
+- [ ] Multi-datacenter replication
+- [ ] Advanced threat detection
+- [ ] Auto-remediation workflows
+- [ ] Cost optimization analytics
+
+---
+
+**Maintained by**: Network Operations Team  
+**Last Updated**: 2024-01-03  
+**Status**: Production Ready ✅
+```

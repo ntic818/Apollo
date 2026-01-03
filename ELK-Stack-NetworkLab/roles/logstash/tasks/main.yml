@@ -1,0 +1,77 @@
+```yaml
+---
+- name: Add Elasticsearch GPG key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elasticsearch repository
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+
+- name: Install Logstash
+  apt:
+    name: "logstash={{ logstash_version }}"
+    state: present
+
+- name: Create Logstash pipeline directory
+  file:
+    path: /etc/logstash/conf.d
+    state: directory
+    owner: logstash
+    group: logstash
+    mode: '0750'
+
+- name: Deploy Logstash pipelines
+  template:
+    src: "{{ item }}"
+    dest: "/etc/logstash/conf.d/{{ item | basename | regex_replace('\\.j2$', '') }}"
+    owner: logstash
+    group: logstash
+    mode: '0640'
+  with_fileglob:
+    - ../templates/pipelines/*.j2
+  notify: restart logstash
+
+- name: Configure Logstash main config
+  template:
+    src: logstash.yml.j2
+    dest: /etc/logstash/logstash.yml
+    owner: logstash
+    group: logstash
+    mode: '0640'
+  notify: restart logstash
+
+- name: Configure Logstash JVM
+  template:
+    src: jvm.options.j2
+    dest: /etc/logstash/jvm.options
+    owner: logstash
+    group: logstash
+    mode: '0640'
+  notify: restart logstash
+
+- name: Create Logstash patterns directory
+  file:
+    path: /etc/logstash/patterns
+    state: directory
+    owner: logstash
+    group: logstash
+    mode: '0750'
+
+- name: Copy custom grok patterns
+  copy:
+    src: patterns/
+    dest: /etc/logstash/patterns/
+    owner: logstash
+    group: logstash
+    mode: '0640'
+  notify: restart logstash
+
+- name: Start and enable Logstash
+  systemd:
+    name: logstash
+    state: started
+    enabled: yes
+```

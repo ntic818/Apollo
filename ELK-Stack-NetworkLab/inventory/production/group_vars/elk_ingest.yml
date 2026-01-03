@@ -1,0 +1,17 @@
+```yaml
+---
+elasticsearch_node_roles:
+  - ingest
+
+node_master: false
+node_data: false
+node_ingest: true
+node_ml: false
+
+elasticsearch_heap_size_min: 8g
+elasticsearch_heap_size_max: 8g
+
+# Ingest pipeline settings
+ingest_geoip_downloader_enabled: true
+processors: "{{ ansible_processor_vcpus }}"
+```

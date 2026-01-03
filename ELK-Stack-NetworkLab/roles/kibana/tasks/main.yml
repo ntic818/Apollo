@@ -1,0 +1,86 @@
+```yaml
+---
+- name: Add Elasticsearch GPG key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elasticsearch repository
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+
+- name: Install Kibana
+  apt:
+    name: "kibana={{ kibana_version }}"
+    state: present
+
+- name: Configure Kibana
+  template:
+    src: kibana.yml.j2
+    dest: /etc/kibana/kibana.yml
+    owner: kibana
+    group: kibana
+    mode: '0640'
+  notify: restart kibana
+
+- name: Create Kibana certificate directory
+  file:
+    path: /etc/kibana/certs
+    state: directory
+    owner: kibana
+    group: kibana
+    mode: '0750'
+
+- name: Copy certificates
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: kibana
+    group: kibana
+    mode: '0640'
+  loop:
+    - { src: "certs/ca/ca-cert.pem", dest: "/etc/kibana/certs/ca-cert.pem" }
+    - { src: "certs/kibana/{{ inventory_hostname }}-cert.pem", dest: "/etc/kibana/certs/kibana.crt" }
+    - { src: "certs/kibana/{{ inventory_hostname }}-key.pem", dest: "/etc/kibana/certs/kibana.key" }
+  notify: restart kibana
+
+- name: Start and enable Kibana
+  systemd:
+    name: kibana
+    state: started
+    enabled: yes
+
+- name: Wait for Kibana to start
+  wait_for:
+    host: localhost
+    port: "{{ kibana_port }}"
+    delay: 30
+    timeout: 300
+
+- name: Create Kibana service account token
+  uri:
+    url: "https://{{ groups['elk_ingest'][0] }}:9200/_security/service/elastic/kibana/credential/token/kibana_token"
+    method: POST
+    user: elastic
+    password: "{{ vault_elasticsearch_password }}"
+    validate_certs: false
+    return_content: yes
+  register: kibana_token
+  when: inventory_hostname == groups['kibana_servers'][0]
+  run_once: true
+
+- name: Import Kibana saved objects
+  shell: |
+    for file in /opt/kibana-assets/**/*.ndjson; do
+      curl -X POST "https://localhost:5601/api/saved_objects/_import?overwrite=true" \
+        -H "kbn-xsrf: true" \
+        -u elastic:{{ vault_elasticsearch_password }} \
+        --form file=@"$file" \
+        --insecure
+    done
+  args:
+    executable: /bin/bash
+  when: inventory_hostname == groups['kibana_servers'][0]
+  run_once: true
+```

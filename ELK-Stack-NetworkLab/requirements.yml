@@ -1,0 +1,20 @@
+```yaml
+---
+collections:
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"
+  - name: community.crypto
+    version: ">=2.16.0"
+  - name: cisco.ios
+    version: ">=5.0.0"
+  - name: elastic.elasticsearch
+    version: ">=0.1.0"
+
+roles:
+  - name: geerlingguy.java
+    version: "2.3.0"
+  - name: geerlingguy.elasticsearch
+    version: "4.0.1"
+```

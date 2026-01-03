@@ -1,0 +1,85 @@
+```yaml
+---
+- name: Add Elasticsearch GPG key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elasticsearch repository
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+    filename: elasticsearch
+
+- name: Install Elasticsearch
+  apt:
+    name: "elasticsearch={{ elk_version }}"
+    state: present
+  register: es_install
+
+- name: Create Elasticsearch configuration from template
+  template:
+    src: elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: elasticsearch
+    group: elasticsearch
+    mode: '0660'
+  notify: restart elasticsearch
+
+- name: Configure JVM options
+  template:
+    src: jvm.options.j2
+    dest: /etc/elasticsearch/jvm.options.d/custom.options
+    owner: elasticsearch
+    group: elasticsearch
+    mode: '0660'
+  notify: restart elasticsearch
+
+- name: Create systemd override directory
+  file:
+    path: /etc/systemd/system/elasticsearch.service.d
+    state: directory
+    mode: '0755'
+
+- name: Configure systemd override
+  copy:
+    content: |
+      [Service]
+      LimitNOFILE={{ max_open_files }}
+      LimitMEMLOCK=infinity
+    dest: /etc/systemd/system/elasticsearch.service.d/override.conf
+  notify:
+    - reload systemd
+    - restart elasticsearch
+
+- name: Start and enable Elasticsearch
+  systemd:
+    name: elasticsearch
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Wait for Elasticsearch to start
+  wait_for:
+    host: localhost
+    port: "{{ elasticsearch_http_port }}"
+    delay: 10
+    timeout: 300
+
+- name: Reset elastic password (first node only)
+  shell: |
+    /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -b
+  register: elastic_password
+  when:
+    - inventory_hostname == groups['elk_masters'][0]
+    - es_install.changed
+  no_log: true
+
+- name: Display elastic password
+  debug:
+    msg: "Elastic password: {{ elastic_password.stdout_lines[-1] }}"
+  when:
+    - inventory_hostname == groups['elk_masters'][0]
+    - elastic_password is defined
+    - elastic_password.changed
+```

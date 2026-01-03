@@ -1,0 +1,57 @@
+```yaml
+# Kibana Configuration
+server.port: {{ kibana_port }}
+server.host: "{{ kibana_server_host }}"
+server.name: "{{ ansible_hostname }}"
+server.publicBaseUrl: "{{ kibana_server_publicBaseUrl }}"
+
+# SSL
+server.ssl.enabled: {{ kibana_server_ssl_enabled }}
+server.ssl.certificate: {{ kibana_server_ssl_certificate }}
+server.ssl.key: {{ kibana_server_ssl_key }}
+
+# Elasticsearch
+elasticsearch.hosts: {{ kibana_elasticsearch_hosts | to_json }}
+elasticsearch.username: {{ kibana_elasticsearch_username }}
+elasticsearch.serviceAccountToken: {{ vault_kibana_service_token }}
+elasticsearch.ssl.certificateAuthorities: ["/etc/kibana/certs/ca-cert.pem"]
+
+# Security
+xpack.security.enabled: {{ kibana_security_enabled }}
+xpack.security.encryptionKey: "{{ vault_kibana_encryption_key }}"
+xpack.security.session.idleTimeout: "{{ kibana_session_timeout }}"
+xpack.security.session.lifespan: "30d"
+
+# Encryption keys
+xpack.encryptedSavedObjects.encryptionKey: "{{ vault_kibana_saved_objects_encryption_key }}"
+xpack.reporting.encryptionKey: "{{ vault_kibana_reporting_encryption_key }}"
+
+# Monitoring
+monitoring.ui.enabled: {{ kibana_monitoring_ui_enabled }}
+monitoring.kibana.collection.enabled: {{ kibana_monitoring_enabled }}
+
+# Alerting
+xpack.alerting.enabled: true
+xpack.actions.enabled: true
+
+# Reporting
+xpack.reporting.enabled: {{ kibana_xpack_reporting_enabled }}
+xpack.reporting.capture.browser.chromium.disableSandbox: false
+
+# Canvas
+xpack.canvas.enabled: {{ kibana_xpack_canvas_enabled }}
+
+# Maps
+xpack.maps.enabled: {{ kibana_xpack_maps_enabled }}
+
+# Logging
+logging.dest: {{ kibana_logging_dest }}
+logging.rotate.enabled: {{ kibana_logging_rotate_enabled }}
+logging.rotate.size: {{ kibana_logging_rotate_size }}
+logging.rotate.keepFiles: {{ kibana_logging_rotate_keep_files }}
+
+# Telemetry
+telemetry.enabled: {{ kibana_telemetry_enabled }}
+```
+
+---

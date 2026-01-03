@@ -1,0 +1,57 @@
+```yaml
+---
+# Global Configuration
+environment: production
+domain: elk.yourdomain.com
+timezone: UTC
+
+# ELK Version
+elk_version: "8.11.1"
+java_version: "17"
+
+# Network Configuration
+syslog_port: 514
+beats_port: 5044
+elasticsearch_http_port: 9200
+elasticsearch_transport_port: 9300
+kibana_port: 5601
+logstash_http_port: 9600
+
+# Security
+security_enabled: true
+tls_enabled: true
+certificate_authority: internal  # internal, letsencrypt, external
+cert_validity_days: 3650
+
+# Paths
+elk_base_dir: /opt/elastic
+data_dir: /var/lib/elasticsearch
+log_dir: /var/log/elasticsearch
+backup_dir: /backup/elasticsearch
+
+# Performance Tuning
+max_open_files: 65536
+max_map_count: 262144
+swappiness: 1
+
+# Monitoring
+prometheus_enabled: true
+prometheus_port: 9114
+
+# Backup
+backup_enabled: true
+backup_schedule: "0 2 * * *"
+backup_retention_days: 30
+snapshot_repository: s3_backup
+
+# Logging
+log_level: info
+slow_log_threshold: 5s
+
+# Network Devices
+syslog_facility: local0
+syslog_severity: informational
+ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+```

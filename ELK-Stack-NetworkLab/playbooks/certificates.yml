@@ -1,0 +1,83 @@
+```yaml
+---
+- name: Generate CA and certificates
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create certificate directory
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - certs/ca
+        - certs/elasticsearch
+        - certs/logstash
+        - certs/kibana
+
+    - name: Generate CA private key
+      community.crypto.openssl_privatekey:
+        path: certs/ca/ca-key.pem
+        size: 4096
+        type: RSA
+
+    - name: Generate CA certificate
+      community.crypto.x509_certificate:
+        path: certs/ca/ca-cert.pem
+        privatekey_path: certs/ca/ca-key.pem
+        provider: selfsigned
+        selfsigned_not_after: "+{{ cert_validity_days }}d"
+        basic_constraints:
+          - CA:TRUE
+        basic_constraints_critical: true
+
+    - name: Generate Elasticsearch certificates
+      include_tasks: tasks/generate_cert.yml
+      vars:
+        cert_name: "{{ item }}"
+        cert_path: certs/elasticsearch
+        san_dns:
+          - "{{ item }}"
+          - "{{ hostvars[item].ansible_host }}"
+          - localhost
+        san_ip:
+          - "{{ hostvars[item].ansible_host }}"
+          - 127.0.0.1
+      loop: "{{ groups['elasticsearch'] }}"
+
+- name: Distribute certificates to Elasticsearch nodes
+  hosts: elasticsearch
+  become: true
+  tasks:
+    - name: Create certificate directory
+      file:
+        path: /etc/elasticsearch/certs
+        state: directory
+        owner: elasticsearch
+        group: elasticsearch
+        mode: '0750'
+
+    - name: Copy CA certificate
+      copy:
+        src: certs/ca/ca-cert.pem
+        dest: /etc/elasticsearch/certs/ca-cert.pem
+        owner: elasticsearch
+        group: elasticsearch
+        mode: '0640'
+
+    - name: Copy node certificate
+      copy:
+        src: "certs/elasticsearch/{{ inventory_hostname }}-cert.pem"
+        dest: /etc/elasticsearch/certs/node-cert.pem
+        owner: elasticsearch
+        group: elasticsearch
+        mode: '0640'
+
+    - name: Copy node key
+      copy:
+        src: "certs/elasticsearch/{{ inventory_hostname }}-key.pem"
+        dest: /etc/elasticsearch/certs/node-key.pem
+        owner: elasticsearch
+        group: elasticsearch
+        mode: '0600'
+```

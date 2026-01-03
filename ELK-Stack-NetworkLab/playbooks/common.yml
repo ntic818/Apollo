@@ -1,0 +1,134 @@
+---
+# Common configuration for all ELK Stack nodes
+- name: Prepare all nodes with common configuration
+  hosts: elk_stack
+  become: true
+  gather_facts: true
+  
+  pre_tasks:
+    - name: Display node information
+      debug:
+        msg: "Configuring {{ inventory_hostname }} ({{ ansible_default_ipv4.address }})"
+    
+    - name: Check system requirements
+      assert:
+        that:
+          - ansible_memtotal_mb >= 4096
+          - ansible_processor_vcpus >= 2
+        fail_msg: "Insufficient system resources"
+        success_msg: "System requirements met"
+  
+  roles:
+    - role: common
+  
+  tasks:
+    - name: Verify common configuration
+      block:
+        - name: Check if Java is installed
+          command: java -version
+          register: java_check
+          changed_when: false
+          failed_when: false
+        
+        - name: Verify Java installation
+          assert:
+            that: java_check.rc == 0
+            fail_msg: "Java is not properly installed"
+        
+        - name: Check system limits
+          shell: ulimit -n
+          register: ulimit_check
+          changed_when: false
+        
+        - name: Verify file limits
+          assert:
+            that: ulimit_check.stdout | int >= 65536
+            fail_msg: "File limits not properly configured"
+        
+        - name: Check vm.max_map_count
+          command: sysctl vm.max_map_count
+          register: map_count
+          changed_when: false
+        
+        - name: Verify vm.max_map_count
+          assert:
+            that: map_count.stdout.split('=')[1] | trim | int >= 262144
+            fail_msg: "vm.max_map_count not properly configured"
+        
+        - name: Check if swap is disabled
+          shell: swapon -s | wc -l
+          register: swap_check
+          changed_when: false
+        
+        - name: Verify swap is disabled
+          assert:
+            that: swap_check.stdout | int <= 1
+            fail_msg: "Swap is not disabled"
+
+- name: Configure firewall rules
+  hosts: elk_stack
+  become: true
+  
+  tasks:
+    - name: Allow Elasticsearch ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "{{ elasticsearch_http_port }}"
+        - "{{ elasticsearch_transport_port }}"
+      when: 
+        - ansible_os_family == "Debian"
+        - inventory_hostname in groups['elasticsearch']
+    
+    - name: Allow Kibana port
+      ufw:
+        rule: allow
+        port: "{{ kibana_port }}"
+        proto: tcp
+      when: 
+        - ansible_os_family == "Debian"
+        - inventory_hostname in groups['kibana_servers']
+    
+    - name: Allow Logstash ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+      loop:
+        - "{{ syslog_port }}"
+        - "{{ beats_port }}"
+      when: 
+        - ansible_os_family == "Debian"
+        - inventory_hostname in groups['logstash_servers']
+    
+    - name: Allow inter-cluster communication
+      ufw:
+        rule: allow
+        from_ip: "{{ hostvars[item].ansible_default_ipv4.address }}"
+      loop: "{{ groups['elk_stack'] }}"
+      when: ansible_os_family == "Debian"
+
+- name: Post-configuration verification
+  hosts: elk_stack
+  become: true
+  
+  tasks:
+    - name: Display configuration summary
+      debug:
+        msg:
+          - "Node: {{ inventory_hostname }}"
+          - "IP: {{ ansible_default_ipv4.address }}"
+          - "Memory: {{ ansible_memtotal_mb }}MB"
+          - "CPU: {{ ansible_processor_vcpus }} vCPU"
+          - "Disk: {{ ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_total') | first | filesizeformat }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+    
+    - name: Create status file
+      copy:
+        content: |
+          Common configuration completed: {{ ansible_date_time.iso8601 }}
+          Node: {{ inventory_hostname }}
+          IP: {{ ansible_default_ipv4.address }}
+        dest: /etc/elk-common-configured
+        mode: '0644'

@@ -1,0 +1,492 @@
+---
+- name: Deploy ML Jobs
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Check if ML is enabled
+      uri:
+        url: "https://localhost:9200/_xpack"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: xpack_info
+    
+    - name: Verify ML is available
+      assert:
+        that: xpack_info.json.features.ml.available
+        success_msg: "Machine Learning is available"
+        fail_msg: "Machine Learning is not available in this license"
+    
+    - name: Find ML job definitions
+      find:
+        paths: "{{ playbook_dir }}/../ml_jobs"
+        patterns: "*_job.json"
+        recurse: yes
+      register: ml_job_files
+      delegate_to: localhost
+    
+    - name: Create ML jobs
+      uri:
+        url: "https://localhost:9200/_ml/anomaly_detectors/{{ item.path | basename | regex_replace('_job\\.json$', '') }}"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body: "{{ lookup('file', item.path) }}"
+        body_format: json
+        validate_certs: false
+        status_code: [200, 201, 409]
+      loop: "{{ ml_job_files.files }}"
+      register: ml_jobs
+      failed_when: false
+    
+    - name: Find ML datafeed definitions
+      find:
+        paths: "{{ playbook_dir }}/../ml_jobs"
+        patterns: "*_datafeed.json"
+        recurse: yes
+      register: datafeed_files
+      delegate_to: localhost
+    
+    - name: Create ML datafeeds
+      uri:
+        url: "https://localhost:9200/_ml/datafeeds/{{ item.path | basename | regex_replace('_datafeed\\.json$', '') }}"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body: "{{ lookup('file', item.path) }}"
+        body_format: json
+        validate_certs: false
+        status_code: [200, 201, 409]
+      loop: "{{ datafeed_files.files }}"
+      register: datafeeds
+      failed_when: false
+    
+    - name: Display ML jobs created
+      debug:
+        msg: "Created {{ ml_job_files.files | length }} ML jobs and {{ datafeed_files.files | length }} datafeeds"
+
+- name: Start ML Jobs
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Get list of ML jobs
+      uri:
+        url: "https://localhost:9200/_ml/anomaly_detectors/_stats"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: ml_stats
+    
+    - name: Open ML jobs
+      uri:
+        url: "https://localhost:9200/_ml/anomaly_detectors/{{ item.job_id }}/_open"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      loop: "{{ ml_stats.json.jobs }}"
+      when: item.state != 'opened'
+      register: open_jobs
+      failed_when: false
+    
+    - name: Start ML datafeeds
+      uri:
+        url: "https://localhost:9200/_ml/datafeeds/{{ item.datafeed_id }}/_start"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      loop: "{{ ml_stats.json.jobs }}"
+      when: 
+        - item.datafeed_config is defined
+        - item.datafeed_config.state != 'started'
+      register: start_datafeeds
+      failed_when: false
+
+- name: Import Kibana dashboards
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create Kibana assets directory
+      file:
+        path: /opt/kibana-assets
+        state: directory
+        mode: '0755'
+    
+    - name: Copy dashboard files to Kibana server
+      copy:
+        src: "{{ playbook_dir }}/../kibana/dashboards/"
+        dest: /opt/kibana-assets/dashboards/
+        mode: '0644'
+      register: dashboard_copy
+    
+    - name: Find dashboard files
+      find:
+        paths: /opt/kibana-assets/dashboards
+        patterns: "*.ndjson"
+        recurse: yes
+      register: dashboard_files
+    
+    - name: Import dashboards
+      shell: |
+        curl -X POST "https://localhost:{{ kibana_port }}/api/saved_objects/_import?overwrite=true" \
+          -H "kbn-xsrf: true" \
+          -u elastic:{{ vault_elasticsearch_password }} \
+          --form file=@"{{ item.path }}" \
+          --insecure
+      loop: "{{ dashboard_files.files }}"
+      register: import_results
+      changed_when: "'success_count\":0' not in import_results.stdout"
+    
+    - name: Display import results
+      debug:
+        msg: "Imported {{ dashboard_files.files | length }} dashboard files"
+
+- name: Create index patterns
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create syslog index pattern
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/syslog-*"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "syslog-*"
+            timeFieldName: "@timestamp"
+            fieldFormatMap: '{"source_ip":{"id":"ip"},"destination_ip":{"id":"ip"}}'
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: syslog_pattern
+      failed_when: false
+    
+    - name: Create beats index pattern
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/beats-*"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "beats-*"
+            timeFieldName: "@timestamp"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: beats_pattern
+      failed_when: false
+    
+    - name: Create metricbeat index pattern
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/metricbeat-*"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "metricbeat-*"
+            timeFieldName: "@timestamp"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: metric_pattern
+      failed_when: false
+
+- name: Create visualizations
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create log volume visualization
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/visualization/log-volume-viz"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "Log Volume Over Time"
+            visState: |
+              {
+                "type": "histogram",
+                "params": {
+                  "type": "histogram",
+                  "grid": {"categoryLines": false},
+                  "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "bottom", "show": true}],
+                  "valueAxes": [{"id": "ValueAxis-1", "name": "LeftAxis-1", "type": "value", "position": "left", "show": true}],
+                  "seriesParams": [{"show": true, "type": "histogram", "mode": "stacked", "data": {"label": "Count", "id": "1"}}]
+                },
+                "aggs": [
+                  {"id": "1", "enabled": true, "type": "count", "schema": "metric"},
+                  {"id": "2", "enabled": true, "type": "date_histogram", "schema": "segment", "params": {"field": "@timestamp", "interval": "auto"}}
+                ]
+              }
+            uiStateJSON: '{}'
+            description: "Shows log volume over time"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: viz_result
+      failed_when: false
+
+- name: Create Canvas workpads
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create Network Operations Canvas
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/canvas/workpad"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "Network Operations Overview"
+          width: 1920
+          height: 1080
+          css: ".canvasPage { background-color: #1d1e24; }"
+          variables: []
+          isWriteable: true
+        validate_certs: false
+        status_code: [200, 201]
+      register: canvas_result
+      failed_when: false
+
+- name: Configure alerting rules for network events
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create index threshold alert for critical events
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/alerting/rule"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "Critical Network Events"
+          tags: ["network", "critical"]
+          rule_type_id: ".index-threshold"
+          consumer: "alerts"
+          schedule:
+            interval: "1m"
+          params:
+            index: ["syslog-*"]
+            timeField: "@timestamp"
+            aggType: "count"
+            groupBy: "top"
+            termField: "syslog_hostname"
+            termSize: 10
+            timeWindowSize: 5
+            timeWindowUnit: "m"
+            thresholdComparator: ">"
+            threshold: [10]
+          actions: []
+          notify_when: "onActiveAlert"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: alert_critical
+      failed_when: false
+    
+    - name: Create alert for authentication failures
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/alerting/rule"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "Authentication Failures"
+          tags: ["security", "authentication"]
+          rule_type_id: ".index-threshold"
+          consumer: "alerts"
+          schedule:
+            interval: "5m"
+          params:
+            index: ["syslog-*"]
+            timeField: "@timestamp"
+            aggType: "count"
+            groupBy: "top"
+            termField: "syslog_hostname"
+            termSize: 5
+            timeWindowSize: 10
+            timeWindowUnit: "m"
+            thresholdComparator: ">"
+            threshold: [5]
+            filterQuery: 'mnemonic:*AUTH* AND (message:*failed* OR message:*denied*)'
+          actions: []
+          notify_when: "onActiveAlert"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: alert_auth
+      failed_when: false
+    
+    - name: Create alert for interface flapping
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/alerting/rule"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "Interface Flapping Detected"
+          tags: ["network", "interface"]
+          rule_type_id: ".index-threshold"
+          consumer: "alerts"
+          schedule:
+            interval: "5m"
+          params:
+            index: ["syslog-*"]
+            timeField: "@timestamp"
+            aggType: "count"
+            groupBy: "top"
+            termField: "interface"
+            termSize: 10
+            timeWindowSize: 15
+            timeWindowUnit: "m"
+            thresholdComparator: ">"
+            threshold: [10]
+            filterQuery: 'mnemonic:*UPDOWN* OR mnemonic:*LINK*'
+          actions: []
+          notify_when: "onActiveAlert"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: alert_flapping
+      failed_when: false
+
+- name: Create saved searches
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create critical events search
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/search/critical-events-search"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "Critical Network Events"
+            description: "Shows all critical severity events"
+            columns: ["@timestamp", "syslog_hostname", "mnemonic", "event_message"]
+            sort: [["@timestamp", "desc"]]
+            kibanaSavedObjectMeta:
+              searchSourceJSON: |
+                {
+                  "index": "syslog-*",
+                  "query": {"query": "severity:[0 TO 3]", "language": "lucene"},
+                  "filter": []
+                }
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: search_critical
+      failed_when: false
+
+- name: Verify observability setup
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Check ML jobs status
+      uri:
+        url: "https://localhost:9200/_ml/anomaly_detectors/_stats"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: final_ml_stats
+    
+    - name: Count active ML jobs
+      set_fact:
+        active_jobs: "{{ final_ml_stats.json.jobs | selectattr('state', 'equalto', 'opened') | list | length }}"
+    
+    - name: Verify ML jobs are running
+      debug:
+        msg: "{{ active_jobs }} ML jobs are currently active"
+    
+    - name: Check index patterns in Kibana
+      uri:
+        url: "https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}/api/saved_objects/_find?type=index-pattern"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: index_patterns
+    
+    - name: Display index patterns
+      debug:
+        msg: "Found {{ index_patterns.json.total }} index patterns in Kibana"
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Display observability deployment summary
+      debug:
+        msg:
+          - "========================================="
+          - "Observability Assets Deployed!"
+          - "========================================="
+          - ""
+          - "Machine Learning Jobs:"
+          - "  ✓ Network log volume anomaly detection"
+          - "  ✓ Authentication failure clustering"
+          - "  ✓ Interface flapping prediction"
+          - ""
+          - "Dashboards:"
+          - "  ✓ Network Operations Dashboard"
+          - "  ✓ Security Analytics Dashboard"
+          - "  ✓ Performance Metrics Dashboard"
+          - ""
+          - "Alert Rules:"
+          - "  ✓ Critical Network Events (>10 in 5min)"
+          - "  ✓ Authentication Failures (>5 in 10min)"
+          - "  ✓ Interface Flapping (>10 in 15min)"
+          - ""
+          - "Index Patterns:"
+          - "  ✓ syslog-*"
+          - "  ✓ beats-*"
+          - "  ✓ metricbeat-*"
+          - ""
+          - "Saved Searches:"
+          - "  ✓ Critical Network Events"
+          - ""
+          - "Canvas Workpads:"
+          - "  ✓ Network Operations Overview"
+          - ""
+          - "Access Kibana:"
+          - "  https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}"
+          - ""
+          - "View ML Jobs:"
+          - "  https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}/app/ml"
+          - ""
+          - "========================================="

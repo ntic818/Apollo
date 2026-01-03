@@ -1,0 +1,214 @@
+---
+- name: Deploy Logstash servers
+  hosts: logstash_servers
+  become: true
+  serial: 1  # Deploy one at a time to maintain availability
+  
+  pre_tasks:
+    - name: Verify Elasticsearch cluster is available
+      uri:
+        url: "https://{{ groups['elk_ingest'][0] }}:9200/_cluster/health"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: es_health
+      until: es_health.json.status in ['yellow', 'green']
+      retries: 5
+      delay: 10
+      delegate_to: localhost
+      run_once: true
+    
+    - name: Display Elasticsearch status
+      debug:
+        msg: "Elasticsearch cluster status: {{ es_health.json.status }}"
+      run_once: true
+  
+  roles:
+    - role: logstash
+  
+  post_tasks:
+    - name: Wait for Logstash to start
+      wait_for:
+        host: localhost
+        port: "{{ logstash_http_port }}"
+        delay: 10
+        timeout: 300
+    
+    - name: Verify Logstash API
+      uri:
+        url: "http://localhost:{{ logstash_http_port }}/_node"
+        method: GET
+        return_content: yes
+      register: logstash_info
+      retries: 5
+      delay: 5
+    
+    - name: Display Logstash info
+      debug:
+        msg: 
+          - "Logstash version: {{ logstash_info.json.version }}"
+          - "Node ID: {{ logstash_info.json.id }}"
+
+- name: Configure Logstash users in Elasticsearch
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create logstash_writer role
+      uri:
+        url: "https://localhost:9200/_security/role/logstash_writer"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          cluster:
+            - manage_index_templates
+            - monitor
+            - manage_ilm
+          indices:
+            - names: ["syslog-*", "beats-*", "logstash-*"]
+              privileges:
+                - write
+                - create
+                - create_index
+                - manage
+                - manage_ilm
+        validate_certs: false
+        status_code: [200, 201]
+    
+    - name: Create logstash_writer user
+      uri:
+        url: "https://localhost:9200/_security/user/logstash_writer"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          password: "{{ vault_logstash_writer_password }}"
+          roles: ["logstash_writer"]
+          full_name: "Logstash Writer User"
+        validate_certs: false
+        status_code: [200, 201]
+      register: user_creation
+      failed_when: false
+    
+    - name: Update logstash_writer password if user exists
+      uri:
+        url: "https://localhost:9200/_security/user/logstash_writer/_password"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          password: "{{ vault_logstash_writer_password }}"
+        validate_certs: false
+        status_code: [200, 201]
+      when: user_creation.status == 200
+    
+    - name: Create logstash_system user password
+      uri:
+        url: "https://localhost:9200/_security/user/logstash_system/_password"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          password: "{{ vault_logstash_system_password }}"
+        validate_certs: false
+        status_code: [200, 201]
+
+- name: Test log ingestion
+  hosts: logstash_servers[0]
+  become: true
+  
+  tasks:
+    - name: Send test log message
+      shell: |
+        logger -p local0.info -t TEST_MESSAGE "ELK Stack test message from {{ inventory_hostname }} at {{ ansible_date_time.iso8601 }}"
+      changed_when: false
+    
+    - name: Wait for log to be indexed
+      pause:
+        seconds: 10
+    
+    - name: Query for test message
+      uri:
+        url: "https://{{ groups['elk_ingest'][0] }}:9200/syslog-*/_search"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          query:
+            match:
+              syslog_program: "TEST_MESSAGE"
+          size: 1
+          sort:
+            - "@timestamp": "desc"
+        validate_certs: false
+        return_content: yes
+      register: test_search
+      retries: 3
+      delay: 5
+      delegate_to: localhost
+    
+    - name: Verify test message was ingested
+      assert:
+        that: test_search.json.hits.total.value > 0
+        success_msg: "✓ Logstash is successfully ingesting logs"
+        fail_msg: "✗ Test message not found in Elasticsearch"
+
+- name: Configure Logstash monitoring
+  hosts: logstash_servers
+  become: true
+  
+  tasks:
+    - name: Create systemd drop-in directory
+      file:
+        path: /etc/systemd/system/logstash.service.d
+        state: directory
+        mode: '0755'
+    
+    - name: Configure service restart policy
+      copy:
+        content: |
+          [Service]
+          Restart=always
+          RestartSec=10
+        dest: /etc/systemd/system/logstash.service.d/restart.conf
+      notify: reload systemd
+    
+    - name: Enable Logstash service
+      systemd:
+        name: logstash
+        enabled: yes
+        daemon_reload: yes
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Display Logstash deployment summary
+      debug:
+        msg:
+          - "========================================="
+          - "Logstash Deployment Complete!"
+          - "========================================="
+          - "Servers deployed: {{ groups['logstash_servers'] | length }}"
+          - "Logstash nodes:"
+          - "{% for host in groups['logstash_servers'] %}"
+          - "  - {{ host }} ({{ hostvars[host].ansible_default_ipv4.address }})"
+          - "{% endfor %}"
+          - ""
+          - "Ports:"
+          - "  - Syslog: {{ syslog_port }}"
+          - "  - Beats: {{ beats_port }}"
+          - "  - API: {{ logstash_http_port }}"
+          - ""
+          - "Test log ingestion: ✓ SUCCESS"
+          - "========================================="

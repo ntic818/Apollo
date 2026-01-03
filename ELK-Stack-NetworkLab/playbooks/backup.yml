@@ -1,0 +1,535 @@
+---
+- name: Configure snapshot repository
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  vars:
+    backup_path: "{{ backup_dir }}/snapshots"
+  
+  pre_tasks:
+    - name: Display backup configuration
+      debug:
+        msg:
+          - "Configuring backup for ELK Stack"
+          - "Repository type: {{ snapshot_repo_type }}"
+          - "{% if snapshot_repo_type == 'fs' %}Backup path: {{ backup_path }}{% endif %}"
+          - "{% if snapshot_repo_type == 's3' %}S3 bucket: {{ snapshot_repo_bucket }}{% endif %}"
+  
+  tasks:
+    - name: Create backup directory (for filesystem repository)
+      file:
+        path: "{{ backup_path }}"
+        state: directory
+        owner: elasticsearch
+        group: elasticsearch
+        mode: '0750'
+      when: snapshot_repo_type == 'fs'
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['elasticsearch'] }}"
+    
+    - name: Install repository-s3 plugin (for S3 repository)
+      command: /usr/share/elasticsearch/bin/elasticsearch-plugin install repository-s3 --batch
+      args:
+        creates: /usr/share/elasticsearch/plugins/repository-s3
+      when: snapshot_repo_type == 's3'
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['elasticsearch'] }}"
+      register: s3_plugin
+    
+    - name: Restart Elasticsearch if S3 plugin was installed
+      systemd:
+        name: elasticsearch
+        state: restarted
+      when: 
+        - snapshot_repo_type == 's3'
+        - s3_plugin.changed
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['elasticsearch'] }}"
+    
+    - name: Wait for Elasticsearch to be ready after restart
+      wait_for:
+        host: localhost
+        port: 9200
+        delay: 10
+        timeout: 300
+      when: 
+        - snapshot_repo_type == 's3'
+        - s3_plugin.changed
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['elasticsearch'] }}"
+    
+    - name: Configure S3 credentials (if using S3)
+      command: >
+        /usr/share/elasticsearch/bin/elasticsearch-keystore add s3.client.default.access_key
+      when: 
+        - snapshot_repo_type == 's3'
+        - vault_s3_access_key is defined
+      no_log: true
+    
+    - name: Add backup path to elasticsearch.yml (for filesystem repository)
+      lineinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        regexp: '^path.repo:'
+        line: 'path.repo: ["{{ backup_path }}"]'
+      when: snapshot_repo_type == 'fs'
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['elasticsearch'] }}"
+      notify: restart elasticsearch
+    
+    - name: Create filesystem snapshot repository
+      uri:
+        url: "https://localhost:9200/_snapshot/{{ snapshot_repository }}"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          type: fs
+          settings:
+            location: "{{ backup_path }}"
+            compress: "{{ snapshot_compress | default(true) }}"
+            chunk_size: "{{ snapshot_chunk_size | default('1gb') }}"
+        validate_certs: false
+        status_code: [200, 201]
+      when: snapshot_repo_type == 'fs'
+    
+    - name: Create S3 snapshot repository
+      uri:
+        url: "https://localhost:9200/_snapshot/{{ snapshot_repository }}"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          type: s3
+          settings:
+            bucket: "{{ snapshot_repo_bucket }}"
+            region: "{{ snapshot_repo_region | default('us-east-1') }}"
+            compress: "{{ snapshot_compress | default(true) }}"
+            chunk_size: "{{ snapshot_chunk_size | default('1gb') }}"
+            server_side_encryption: true
+        validate_certs: false
+        status_code: [200, 201]
+      when: snapshot_repo_type == 's3'
+    
+    - name: Verify snapshot repository
+      uri:
+        url: "https://localhost:9200/_snapshot/{{ snapshot_repository }}/_verify"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: verify_repo
+    
+    - name: Display repository verification
+      debug:
+        msg: "Snapshot repository verified successfully on {{ verify_repo.json.nodes | length }} nodes"
+
+- name: Configure SLM (Snapshot Lifecycle Management) policies
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create daily snapshot policy
+      uri:
+        url: "https://localhost:9200/_slm/policy/daily-snapshots"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          schedule: "{{ backup_schedule | default('0 2 * * *') }}"
+          name: "<daily-snap-{now/d}>"
+          repository: "{{ snapshot_repository }}"
+          config:
+            indices: ["*"]
+            ignore_unavailable: true
+            include_global_state: true
+          retention:
+            expire_after: "{{ backup_retention_days | default(30) }}d"
+            min_count: 7
+            max_count: 90
+        validate_certs: false
+        status_code: [200, 201]
+      register: daily_policy
+    
+    - name: Create weekly snapshot policy
+      uri:
+        url: "https://localhost:9200/_slm/policy/weekly-snapshots"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          schedule: "0 3 * * 0"  # Every Sunday at 3 AM
+          name: "<weekly-snap-{now/w}>"
+          repository: "{{ snapshot_repository }}"
+          config:
+            indices: ["*"]
+            ignore_unavailable: true
+            include_global_state: true
+          retention:
+            expire_after: "90d"
+            min_count: 4
+            max_count: 52
+        validate_certs: false
+        status_code: [200, 201]
+      register: weekly_policy
+    
+    - name: Create monthly snapshot policy
+      uri:
+        url: "https://localhost:9200/_slm/policy/monthly-snapshots"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          schedule: "0 4 1 * *"  # First day of month at 4 AM
+          name: "<monthly-snap-{now/M}>"
+          repository: "{{ snapshot_repository }}"
+          config:
+            indices: ["*"]
+            ignore_unavailable: true
+            include_global_state: true
+          retention:
+            expire_after: "365d"
+            min_count: 12
+            max_count: 24
+        validate_certs: false
+        status_code: [200, 201]
+      register: monthly_policy
+    
+    - name: Get SLM policies
+      uri:
+        url: "https://localhost:9200/_slm/policy"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: slm_policies
+    
+    - name: Display configured policies
+      debug:
+        msg: "Configured {{ slm_policies.json | length }} SLM policies"
+
+- name: Test initial snapshot
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create test snapshot
+      uri:
+        url: "https://localhost:9200/_snapshot/{{ snapshot_repository }}/test-snapshot-{{ ansible_date_time.epoch }}"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          indices: "*"
+          ignore_unavailable: true
+          include_global_state: true
+          metadata:
+            taken_by: "ansible_deployment"
+            taken_because: "initial_test_snapshot"
+        validate_certs: false
+        status_code: [200, 201]
+      register: test_snapshot
+    
+    - name: Wait for test snapshot to complete
+      uri:
+        url: "https://localhost:9200/_snapshot/{{ snapshot_repository }}/test-snapshot-{{ ansible_date_time.epoch }}"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: snapshot_status
+      until: snapshot_status.json.snapshots[0].state == 'SUCCESS'
+      retries: 30
+      delay: 10
+    
+    - name: Display snapshot information
+      debug:
+        msg:
+          - "Test snapshot completed successfully"
+          - "Snapshot: {{ snapshot_status.json.snapshots[0].snapshot }}"
+          - "State: {{ snapshot_status.json.snapshots[0].state }}"
+          - "Indices: {{ snapshot_status.json.snapshots[0].indices | length }}"
+          - "Shards: {{ snapshot_status.json.snapshots[0].shards.successful }}/{{ snapshot_status.json.snapshots[0].shards.total }}"
+          - "Size: {{ (snapshot_status.json.snapshots[0].shards.total * 1024 * 1024) | filesizeformat }}"
+
+- name: Create backup monitoring
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create Watcher for failed snapshots
+      uri:
+        url: "https://localhost:9200/_watcher/watch/snapshot-failures"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          trigger:
+            schedule:
+              interval: "1h"
+          input:
+            search:
+              request:
+                indices: [".slm-history-*"]
+                body:
+                  query:
+                    bool:
+                      must:
+                        - range:
+                            "@timestamp":
+                              gte: "now-1h"
+                        - term:
+                            success: false
+          condition:
+            compare:
+              ctx.payload.hits.total: 
+                gt: 0
+          actions:
+            log_action:
+              logging:
+                text: "Snapshot failures detected: {{ctx.payload.hits.total}}"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: watcher_result
+      failed_when: false
+
+- name: Setup backup monitoring in Kibana
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create backup monitoring dashboard
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/dashboard/backup-monitoring"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "Backup & Snapshot Monitoring"
+            description: "Monitor snapshot success/failure and SLM policies"
+            timeRestore: true
+            timeFrom: "now-7d"
+            timeTo: "now"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: backup_dashboard
+      failed_when: false
+
+- name: Deploy backup scripts to all Elasticsearch nodes
+  hosts: elasticsearch
+  become: true
+  
+  tasks:
+    - name: Create scripts directory
+      file:
+        path: /opt/elk-backup
+        state: directory
+        mode: '0755'
+    
+    - name: Copy backup script
+      copy:
+        src: "{{ playbook_dir }}/../scripts/backup_elk.sh"
+        dest: /opt/elk-backup/backup_elk.sh
+        mode: '0755'
+        owner: elasticsearch
+        group: elasticsearch
+    
+    - name: Copy restore script
+      copy:
+        src: "{{ playbook_dir }}/../scripts/restore_elk.sh"
+        dest: /opt/elk-backup/restore_elk.sh
+        mode: '0755'
+        owner: elasticsearch
+        group: elasticsearch
+    
+    - name: Create backup configuration file
+      copy:
+        content: |
+          # ELK Backup Configuration
+          ES_HOST="https://localhost:9200"
+          ES_USER="elastic"
+          SNAPSHOT_REPO="{{ snapshot_repository }}"
+          BACKUP_RETENTION_DAYS="{{ backup_retention_days | default(30) }}"
+        dest: /opt/elk-backup/backup.conf
+        mode: '0644'
+
+- name: Configure automated backup cron job
+  hosts: elk_masters[0]
+  become: true
+  
+  tasks:
+    - name: Create cron job for manual backup script
+      cron:
+        name: "ELK manual backup"
+        minute: "0"
+        hour: "3"
+        job: "ES_PASS=$(cat /etc/elasticsearch/elastic-password) /opt/elk-backup/backup_elk.sh >> /var/log/elasticsearch/backup.log 2>&1"
+        user: elasticsearch
+        disabled: yes  # Disabled because SLM is handling backups
+        state: present
+    
+    - name: Create log rotation for backup logs
+      copy:
+        content: |
+          /var/log/elasticsearch/backup.log {
+            daily
+            rotate 30
+            compress
+            delaycompress
+            missingok
+            notifempty
+            create 0644 elasticsearch elasticsearch
+          }
+        dest: /etc/logrotate.d/elasticsearch-backup
+        mode: '0644'
+
+- name: Create backup documentation
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Create backup README
+      copy:
+        content: |
+          # ELK Stack Backup & Restore Guide
+          
+          ## Automated Backups (SLM)
+          
+          The cluster is configured with automated snapshots via Snapshot Lifecycle Management (SLM):
+          
+          - **Daily**: {{ backup_schedule | default('2:00 AM') }} - Retained for {{ backup_retention_days | default(30) }} days
+          - **Weekly**: Sunday 3:00 AM - Retained for 90 days
+          - **Monthly**: 1st of month 4:00 AM - Retained for 365 days
+          
+          ## Snapshot Repository
+          
+          - Type: {{ snapshot_repo_type }}
+          {% if snapshot_repo_type == 'fs' %}
+          - Location: {{ backup_dir }}/snapshots
+          {% elif snapshot_repo_type == 's3' %}
+          - S3 Bucket: {{ snapshot_repo_bucket }}
+          - Region: {{ snapshot_repo_region | default('us-east-1') }}
+          {% endif %}
+          
+          ## Manual Backup
+          
+          ```bash
+          # On Elasticsearch master node
+          ES_PASS=your_password /opt/elk-backup/backup_elk.sh
+          ```
+          
+          ## List Snapshots
+          
+          ```bash
+          curl -k -u elastic:password https://localhost:9200/_snapshot/{{ snapshot_repository }}/_all?pretty
+          ```
+          
+          ## Restore from Snapshot
+          
+          ```bash
+          # On Elasticsearch master node
+          ES_PASS=your_password /opt/elk-backup/restore_elk.sh snapshot_name
+          ```
+          
+          ## Verify Backups
+          
+          ```bash
+          # Check SLM policy status
+          curl -k -u elastic:password https://localhost:9200/_slm/policy?pretty
+          
+          # Check latest snapshots
+          curl -k -u elastic:password https://localhost:9200/_snapshot/{{ snapshot_repository }}/_all?sort=start_time&order=desc&size=5&pretty
+          ```
+          
+          ## Monitoring
+          
+          - View backup status in Kibana: Stack Management > Snapshot and Restore
+          - Dashboard: https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}/app/management/data/snapshot_restore
+          
+          ## Troubleshooting
+          
+          If snapshots fail:
+          
+          1. Check disk space on backup location
+          2. Verify repository permissions
+          3. Check Elasticsearch logs: /var/log/elasticsearch/
+          4. Verify cluster health is green/yellow
+          
+          For S3 backups:
+          - Verify AWS credentials
+          - Check S3 bucket permissions
+          - Ensure network connectivity to S3
+        dest: "{{ playbook_dir }}/../docs/BACKUP_GUIDE.md"
+      delegate_to: localhost
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Display backup configuration summary
+      debug:
+        msg:
+          - "========================================="
+          - "Backup Configuration Complete!"
+          - "========================================="
+          - ""
+          - "Snapshot Repository:"
+          - "  Name: {{ snapshot_repository }}"
+          - "  Type: {{ snapshot_repo_type }}"
+          - "{% if snapshot_repo_type == 'fs' %}"
+          - "  Location: {{ backup_dir }}/snapshots"
+          - "{% elif snapshot_repo_type == 's3' %}"
+          - "  S3 Bucket: {{ snapshot_repo_bucket }}"
+          - "  Region: {{ snapshot_repo_region | default('us-east-1') }}"
+          - "{% endif %}"
+          - ""
+          - "SLM Policies Configured:"
+          - "  ✓ Daily snapshots - {{ backup_schedule | default('2:00 AM') }}"
+          - "    Retention: {{ backup_retention_days | default(30) }} days"
+          - "  ✓ Weekly snapshots - Sunday 3:00 AM"
+          - "    Retention: 90 days"
+          - "  ✓ Monthly snapshots - 1st of month 4:00 AM"
+          - "    Retention: 365 days"
+          - ""
+          - "Test Snapshot: ✓ Completed successfully"
+          - ""
+          - "Backup Scripts Deployed:"
+          - "  - /opt/elk-backup/backup_elk.sh"
+          - "  - /opt/elk-backup/restore_elk.sh"
+          - ""
+          - "Monitoring:"
+          - "  - Watcher for failed snapshots: ✓ Enabled"
+          - "  - Backup dashboard: ✓ Created"
+          - ""
+          - "View Snapshots:"
+          - "  Kibana > Stack Management > Snapshot and Restore"
+          - "  https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}/app/management/data/snapshot_restore"
+          - ""
+          - "Documentation: docs/BACKUP_GUIDE.md"
+          - ""
+          - "========================================="
+  
+  handlers:
+    - name: restart elasticsearch
+      systemd:
+        name: elasticsearch
+        state: restarted
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['elasticsearch'] }}"

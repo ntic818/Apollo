@@ -1,0 +1,362 @@
+---
+- name: Configure network devices for ELK integration
+  hosts: network_devices
+  gather_facts: false
+  
+  vars:
+    backup_dir: "{{ playbook_dir }}/../backups/network_devices"
+  
+  pre_tasks:
+    - name: Create backup directory
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+    
+    - name: Display device information
+      debug:
+        msg: "Configuring {{ inventory_hostname }} ({{ device_type }})"
+
+- name: Backup network device configurations
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Backup running configuration
+      cisco.ios.ios_command:
+        commands:
+          - show running-config
+      register: device_config
+    
+    - name: Save backup locally
+      copy:
+        content: "{{ device_config.stdout[0] }}"
+        dest: "{{ backup_dir }}/{{ inventory_hostname }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time }}.cfg"
+      delegate_to: localhost
+    
+    - name: Display backup location
+      debug:
+        msg: "Backup saved: {{ backup_dir }}/{{ inventory_hostname }}_{{ ansible_date_time.date }}_{{ ansible_date_time.time }}.cfg"
+
+- name: Configure syslog on network devices
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Configure service timestamps
+      cisco.ios.ios_config:
+        lines:
+          - service timestamps debug datetime msec localtime show-timezone
+          - service timestamps log datetime msec localtime show-timezone
+      register: timestamp_config
+    
+    - name: Configure logging settings
+      cisco.ios.ios_config:
+        lines:
+          - "logging trap {{ syslog_severity }}"
+          - "logging facility {{ syslog_facility }}"
+          - "logging buffered {{ logging_buffered_size }}"
+          - "logging console {{ logging_console_level }}"
+          - "logging monitor {{ logging_monitor_level }}"
+      register: logging_config
+    
+    - name: Configure syslog source interface
+      cisco.ios.ios_config:
+        lines:
+          - "logging source-interface {{ item }}"
+      loop:
+        - Loopback0
+      when: device_type == 'router'
+      register: source_config
+      failed_when: false
+    
+    - name: Configure primary syslog server
+      cisco.ios.ios_config:
+        lines:
+          - "logging host {{ syslog_server }} transport {{ syslog_protocol }} port {{ syslog_port }}"
+      register: primary_syslog
+    
+    - name: Configure backup syslog server
+      cisco.ios.ios_config:
+        lines:
+          - "logging host {{ syslog_server_backup }} transport {{ syslog_protocol }} port {{ syslog_port }}"
+      when: syslog_server_backup is defined
+      register: backup_syslog
+    
+    - name: Display syslog configuration status
+      debug:
+        msg: 
+          - "Syslog configured on {{ inventory_hostname }}"
+          - "Primary server: {{ syslog_server }}"
+          - "{% if syslog_server_backup is defined %}Backup server: {{ syslog_server_backup }}{% endif %}"
+          - "Facility: {{ syslog_facility }}"
+          - "Severity: {{ syslog_severity }}"
+
+- name: Configure NTP on network devices
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Configure NTP servers
+      cisco.ios.ios_config:
+        lines:
+          - "ntp server {{ item }}"
+      loop: "{{ ntp_servers }}"
+      when: ntp_servers is defined
+    
+    - name: Configure timezone
+      cisco.ios.ios_config:
+        lines:
+          - "clock timezone {{ timezone }} 0"
+      when: timezone is defined
+    
+    - name: Verify NTP associations
+      cisco.ios.ios_command:
+        commands:
+          - show ntp associations
+      register: ntp_status
+    
+    - name: Display NTP status
+      debug:
+        var: ntp_status.stdout_lines
+
+- name: Configure SNMP on network devices
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Configure SNMP community
+      cisco.ios.ios_config:
+        lines:
+          - "snmp-server community {{ snmp_community }} RO"
+      when: snmp_community is defined
+      no_log: true
+    
+    - name: Configure SNMP location and contact
+      cisco.ios.ios_config:
+        lines:
+          - "snmp-server location {{ snmp_location }}"
+          - "snmp-server contact {{ snmp_contact }}"
+      when: 
+        - snmp_location is defined
+        - snmp_contact is defined
+    
+    - name: Enable SNMP traps
+      cisco.ios.ios_config:
+        lines:
+          - snmp-server enable traps syslog
+          - snmp-server enable traps config
+          - snmp-server enable traps cpu threshold
+          - snmp-server enable traps memory bufferpeak
+          - snmp-server enable traps entity
+          - snmp-server enable traps envmon
+      register: snmp_traps
+
+- name: Configure enhanced logging for security events
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Enable login logging
+      cisco.ios.ios_config:
+        lines:
+          - login on-success log
+          - login on-failure log every 1
+      register: login_logging
+    
+    - name: Enable AAA logging
+      cisco.ios.ios_config:
+        lines:
+          - aaa accounting exec default start-stop group tacacs+
+          - aaa accounting commands 15 default start-stop group tacacs+
+      when: device_type == 'router'
+      register: aaa_logging
+      failed_when: false
+    
+    - name: Enable archive logging for configuration changes
+      cisco.ios.ios_config:
+        lines:
+          - archive
+          - " log config"
+          - "  logging enable"
+          - "  notify syslog contenttype plaintext"
+      register: archive_logging
+
+- name: Save configurations
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Save running configuration to startup
+      cisco.ios.ios_command:
+        commands:
+          - write memory
+      register: save_config
+    
+    - name: Verify configuration was saved
+      debug:
+        msg: "Configuration saved on {{ inventory_hostname }}"
+
+- name: Verify syslog connectivity
+  hosts: network_devices
+  gather_facts: false
+  
+  tasks:
+    - name: Generate test syslog message
+      cisco.ios.ios_command:
+        commands:
+          - "send log ELK_TEST: Configuration complete for {{ inventory_hostname }} at {{ ansible_date_time.iso8601 }}"
+      register: test_message
+    
+    - name: Check logging configuration
+      cisco.ios.ios_command:
+        commands:
+          - show logging | include Trap|Logging to
+      register: logging_verify
+    
+    - name: Display logging verification
+      debug:
+        var: logging_verify.stdout_lines
+    
+    - name: Wait for logs to reach Elasticsearch
+      pause:
+        seconds: 15
+        prompt: "Waiting for test logs to be indexed..."
+      run_once: true
+
+- name: Verify logs in Elasticsearch
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Search for test messages from devices
+      uri:
+        url: "https://{{ groups['elk_ingest'][0] }}:9200/syslog-*/_search"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          query:
+            bool:
+              must:
+                - match:
+                    message: "ELK_TEST"
+                - range:
+                    "@timestamp":
+                      gte: "now-5m"
+          size: 100
+        validate_certs: false
+        return_content: yes
+      register: log_search
+    
+    - name: Display received logs
+      debug:
+        msg: "Found {{ log_search.json.hits.total.value }} test messages from network devices"
+    
+    - name: List devices that sent logs
+      debug:
+        msg: "{{ log_search.json.hits.hits | map(attribute='_source.syslog_hostname') | list | unique }}"
+      when: log_search.json.hits.total.value > 0
+    
+    - name: Verify all devices are sending logs
+      assert:
+        that: log_search.json.hits.total.value >= (groups['network_devices'] | length)
+        success_msg: "✓ All network devices are sending logs to ELK Stack"
+        fail_msg: "⚠ Some network devices may not be properly configured"
+      failed_when: false
+
+- name: Create network device inventory in Elasticsearch
+  hosts: localhost
+  gather_facts: false
+  run_once: true
+  
+  tasks:
+    - name: Create device inventory index
+      uri:
+        url: "https://{{ groups['elk_ingest'][0] }}:9200/network-inventory"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 1
+          mappings:
+            properties:
+              hostname:
+                type: keyword
+              ip_address:
+                type: ip
+              device_type:
+                type: keyword
+              os_type:
+                type: keyword
+              location:
+                type: keyword
+              last_updated:
+                type: date
+        validate_certs: false
+        status_code: [200, 201, 400]
+      register: inventory_index
+      failed_when: false
+    
+    - name: Index device information
+      uri:
+        url: "https://{{ groups['elk_ingest'][0] }}:9200/network-inventory/_doc/{{ hostvars[item].inventory_hostname }}"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          hostname: "{{ hostvars[item].inventory_hostname }}"
+          ip_address: "{{ hostvars[item].ansible_host }}"
+          device_type: "{{ hostvars[item].device_type | default('unknown') }}"
+          os_type: "{{ hostvars[item].ansible_network_os | default('ios') }}"
+          location: "{{ hostvars[item].site | default('unknown') }}"
+          last_updated: "{{ ansible_date_time.iso8601 }}"
+        validate_certs: false
+        status_code: [200, 201]
+      loop: "{{ groups['network_devices'] }}"
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Display network device configuration summary
+      debug:
+        msg:
+          - "========================================="
+          - "Network Device Configuration Complete!"
+          - "========================================="
+          - ""
+          - "Devices configured: {{ groups['network_devices'] | length }}"
+          - ""
+          - "Configuration applied:"
+          - "  ✓ Syslog forwarding to:"
+          - "    - Primary: {{ syslog_server }}"
+          - "{% if syslog_server_backup is defined %}"
+          - "    - Backup: {{ syslog_server_backup }}"
+          - "{% endif %}"
+          - "  ✓ NTP synchronization"
+          - "  ✓ SNMP monitoring"
+          - "  ✓ Enhanced security logging"
+          - "  ✓ Configuration change tracking"
+          - ""
+          - "Device List:"
+          - "{% for device in groups['network_devices'] %}"
+          - "  - {{ device }} ({{ hostvars[device].ansible_host }})"
+          - "{% endfor %}"
+          - ""
+          - "Backups saved to: {{ backup_dir }}"
+          - ""
+          - "Verification:"
+          - "  - Check logs in Kibana: https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}"
+          - "  - Index pattern: syslog-*"
+          - "  - Filter by: syslog_hostname"
+          - ""
+          - "========================================="

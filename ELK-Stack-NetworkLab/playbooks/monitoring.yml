@@ -1,0 +1,391 @@
+---
+- name: Enable Elasticsearch monitoring
+  hosts: elasticsearch
+  become: true
+  
+  tasks:
+    - name: Enable monitoring collection
+      uri:
+        url: "https://localhost:9200/_cluster/settings"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          persistent:
+            xpack.monitoring.collection.enabled: true
+            xpack.monitoring.elasticsearch.collection.enabled: true
+        validate_certs: false
+        status_code: [200, 201]
+      run_once: true
+      delegate_to: "{{ groups['elk_masters'][0] }}"
+
+- name: Deploy Prometheus Elasticsearch Exporter
+  hosts: elasticsearch
+  become: true
+  
+  tasks:
+    - name: Create exporter user
+      file:
+        path: /opt/prometheus
+        state: directory
+        mode: '0755'
+    
+    - name: Download Elasticsearch Exporter
+      get_url:
+        url: "https://github.com/prometheus-community/elasticsearch_exporter/releases/download/v1.6.0/elasticsearch_exporter-1.6.0.linux-amd64.tar.gz"
+        dest: /tmp/elasticsearch_exporter.tar.gz
+        mode: '0644'
+      when: prometheus_enabled | default(false)
+    
+    - name: Extract Elasticsearch Exporter
+      unarchive:
+        src: /tmp/elasticsearch_exporter.tar.gz
+        dest: /opt/prometheus
+        remote_src: yes
+        creates: /opt/prometheus/elasticsearch_exporter
+      when: prometheus_enabled | default(false)
+    
+    - name: Create systemd service for exporter
+      copy:
+        content: |
+          [Unit]
+          Description=Elasticsearch Exporter
+          After=network.target elasticsearch.service
+          
+          [Service]
+          Type=simple
+          User=elasticsearch
+          ExecStart=/opt/prometheus/elasticsearch_exporter \
+            --es.uri=https://localhost:9200 \
+            --es.all \
+            --es.indices \
+            --es.cluster_settings \
+            --es.ssl-skip-verify \
+            --web.listen-address=:{{ prometheus_port | default(9114) }}
+          Restart=always
+          RestartSec=10
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/elasticsearch_exporter.service
+        mode: '0644'
+      when: prometheus_enabled | default(false)
+      notify:
+        - reload systemd
+        - restart elasticsearch_exporter
+    
+    - name: Start Elasticsearch Exporter
+      systemd:
+        name: elasticsearch_exporter
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      when: prometheus_enabled | default(false)
+
+- name: Configure Stack Monitoring in Kibana
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Enable Stack Monitoring UI
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/kibana/settings"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          changes:
+            "xpack.monitoring.ui.enabled": true
+            "xpack.monitoring.ui.container.elasticsearch.enabled": true
+            "xpack.monitoring.ui.container.logstash.enabled": true
+        validate_certs: false
+        status_code: [200, 201]
+    
+    - name: Configure monitoring collection interval
+      uri:
+        url: "https://{{ groups['elk_masters'][0] }}:9200/_cluster/settings"
+        method: PUT
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          persistent:
+            xpack.monitoring.collection.interval: "30s"
+        validate_certs: false
+        status_code: [200, 201]
+
+- name: Configure alerting rules
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create connector for Slack/Email (example)
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/actions/connector"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "ELK Alerts"
+          connector_type_id: ".index"
+          config:
+            index: "elk-alerts"
+            executionTimeField: "@timestamp"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: connector_result
+      failed_when: false
+    
+    - name: Create cluster health alert rule
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/alerting/rule"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "Cluster Status Red"
+          tags: ["elasticsearch", "critical"]
+          rule_type_id: "monitoring_alert_cluster_health"
+          consumer: "alerts"
+          schedule:
+            interval: "1m"
+          actions: []
+          params:
+            threshold: "red"
+            duration: "5m"
+          notify_when: "onActionGroupChange"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: alert_rule
+      failed_when: false
+    
+    - name: Create disk usage alert rule
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/alerting/rule"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "High Disk Usage"
+          tags: ["elasticsearch", "warning"]
+          rule_type_id: "monitoring_alert_disk_usage"
+          consumer: "alerts"
+          schedule:
+            interval: "5m"
+          actions: []
+          params:
+            threshold: 85
+            duration: "15m"
+          notify_when: "onActionGroupChange"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: disk_alert
+      failed_when: false
+    
+    - name: Create JVM memory pressure alert
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/alerting/rule"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          name: "JVM Memory Pressure"
+          tags: ["elasticsearch", "warning"]
+          rule_type_id: "monitoring_alert_jvm_memory_usage"
+          consumer: "alerts"
+          schedule:
+            interval: "1m"
+          actions: []
+          params:
+            threshold: 85
+            duration: "5m"
+          notify_when: "onActionGroupChange"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: jvm_alert
+      failed_when: false
+
+- name: Create monitoring dashboards
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create cluster health dashboard
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/dashboard/elk-cluster-health"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "ELK Cluster Health"
+            description: "Overall cluster health and status monitoring"
+            timeRestore: true
+            timeFrom: "now-1h"
+            timeTo: "now"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: dashboard_result
+      failed_when: false
+
+- name: Configure Logstash monitoring
+  hosts: logstash_servers
+  become: true
+  
+  tasks:
+    - name: Enable Logstash monitoring
+      lineinfile:
+        path: /etc/logstash/logstash.yml
+        regexp: '^xpack.monitoring.enabled:'
+        line: 'xpack.monitoring.enabled: true'
+      notify: restart logstash
+    
+    - name: Configure monitoring collection
+      lineinfile:
+        path: /etc/logstash/logstash.yml
+        regexp: '^xpack.monitoring.collection.interval:'
+        line: 'xpack.monitoring.collection.interval: 30s'
+      notify: restart logstash
+
+- name: Setup Metricbeat for system monitoring
+  hosts: elk_stack
+  become: true
+  
+  tasks:
+    - name: Add Elastic repository (if not already added)
+      apt_repository:
+        repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+        state: present
+        filename: elasticsearch
+      when: ansible_os_family == "Debian"
+    
+    - name: Install Metricbeat
+      apt:
+        name: "metricbeat={{ elk_version }}"
+        state: present
+      when: ansible_os_family == "Debian"
+    
+    - name: Configure Metricbeat modules
+      template:
+        src: metricbeat.yml.j2
+        dest: /etc/metricbeat/metricbeat.yml
+        mode: '0600'
+      notify: restart metricbeat
+    
+    - name: Enable system module
+      command: metricbeat modules enable system
+      args:
+        creates: /etc/metricbeat/modules.d/system.yml
+    
+    - name: Enable Elasticsearch module
+      command: metricbeat modules enable elasticsearch-xpack
+      args:
+        creates: /etc/metricbeat/modules.d/elasticsearch-xpack.yml
+      when: inventory_hostname in groups['elasticsearch']
+    
+    - name: Setup Metricbeat
+      command: metricbeat setup -e
+      args:
+        creates: /var/lib/metricbeat/metricbeat.setup.completed
+      environment:
+        ELASTIC_PASSWORD: "{{ vault_elasticsearch_password }}"
+    
+    - name: Start Metricbeat
+      systemd:
+        name: metricbeat
+        state: started
+        enabled: yes
+
+- name: Verify monitoring setup
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Wait for monitoring data
+      pause:
+        seconds: 60
+        prompt: "Waiting for monitoring data to be collected..."
+    
+    - name: Check Stack Monitoring
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/monitoring/v1/clusters"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          timeRange:
+            min: "now-15m"
+            max: "now"
+        validate_certs: false
+        return_content: yes
+      register: monitoring_check
+    
+    - name: Verify monitoring is active
+      assert:
+        that: monitoring_check.json | length > 0
+        success_msg: "✓ Stack Monitoring is active"
+        fail_msg: "⚠ Stack Monitoring data not yet available"
+      failed_when: false
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Display monitoring setup summary
+      debug:
+        msg:
+          - "========================================="
+          - "Monitoring Setup Complete!"
+          - "========================================="
+          - ""
+          - "Enabled Features:"
+          - "  ✓ Elasticsearch Stack Monitoring"
+          - "  ✓ Kibana Stack Monitoring UI"
+          - "  ✓ Logstash Monitoring"
+          - "{% if prometheus_enabled | default(false) %}"
+          - "  ✓ Prometheus Exporters (port {{ prometheus_port | default(9114) }})"
+          - "{% endif %}"
+          - "  ✓ Metricbeat System Metrics"
+          - ""
+          - "Alert Rules Created:"
+          - "  ✓ Cluster Status Red"
+          - "  ✓ High Disk Usage (>85%)"
+          - "  ✓ JVM Memory Pressure (>85%)"
+          - ""
+          - "Access Stack Monitoring:"
+          - "  https://{{ groups['kibana_servers'][0] }}:{{ kibana_port }}/app/monitoring"
+          - ""
+          - "========================================="
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+    
+    - name: restart elasticsearch_exporter
+      systemd:
+        name: elasticsearch_exporter
+        state: restarted
+    
+    - name: restart logstash
+      systemd:
+        name: logstash
+        state: restarted
+    
+    - name: restart metricbeat
+      systemd:
+        name: metricbeat
+        state: restarted

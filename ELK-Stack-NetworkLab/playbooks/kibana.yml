@@ -1,0 +1,316 @@
+---
+- name: Deploy Kibana servers
+  hosts: kibana_servers
+  become: true
+  serial: 1  # Deploy one at a time
+  
+  pre_tasks:
+    - name: Verify Elasticsearch is available
+      uri:
+        url: "https://{{ groups['elk_ingest'][0] }}:9200/_cluster/health"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: es_health
+      until: es_health.json.status in ['yellow', 'green']
+      retries: 5
+      delay: 10
+      delegate_to: localhost
+    
+    - name: Display Elasticsearch status
+      debug:
+        msg: "Connecting to Elasticsearch cluster (status: {{ es_health.json.status }})"
+  
+  roles:
+    - role: kibana
+  
+  post_tasks:
+    - name: Wait for Kibana to start
+      wait_for:
+        host: localhost
+        port: "{{ kibana_port }}"
+        delay: 30
+        timeout: 300
+    
+    - name: Check Kibana status
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/status"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: kibana_status
+      retries: 10
+      delay: 10
+      until: kibana_status.json.status.overall.state == 'green'
+    
+    - name: Display Kibana status
+      debug:
+        msg: 
+          - "Kibana version: {{ kibana_status.json.version.number }}"
+          - "Status: {{ kibana_status.json.status.overall.state }}"
+
+- name: Configure Kibana in Elasticsearch
+  hosts: elk_masters[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Set kibana_system password
+      uri:
+        url: "https://localhost:9200/_security/user/kibana_system/_password"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          password: "{{ vault_kibana_system_password }}"
+        validate_certs: false
+        status_code: [200, 201]
+    
+    - name: Create Kibana service account token
+      uri:
+        url: "https://localhost:9200/_security/service/elastic/kibana/credential/token/kibana_token"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+        status_code: [200, 201, 409]
+      register: kibana_token
+      failed_when: false
+    
+    - name: Save token for later use
+      set_fact:
+        kibana_service_token: "{{ kibana_token.json.token.value }}"
+      when: kibana_token.status in [200, 201]
+
+- name: Configure Kibana spaces and features
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create Network Operations space
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/spaces/space"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          id: "network-ops"
+          name: "Network Operations"
+          description: "Space for network monitoring and troubleshooting"
+          color: "#0000FF"
+          initials: "NO"
+          disabledFeatures: []
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: space_creation
+      failed_when: false
+    
+    - name: Create Security Operations space
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/spaces/space"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          id: "security-ops"
+          name: "Security Operations"
+          description: "Space for security monitoring and incident response"
+          color: "#FF0000"
+          initials: "SO"
+          disabledFeatures: []
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: sec_space_creation
+      failed_when: false
+    
+    - name: Enable Canvas
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/kibana/settings"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          changes:
+            "xpack.canvas.enabled": true
+        validate_certs: false
+        status_code: [200, 201]
+      when: kibana_xpack_canvas_enabled | default(true)
+    
+    - name: Enable Maps
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/kibana/settings"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          changes:
+            "xpack.maps.enabled": true
+        validate_certs: false
+        status_code: [200, 201]
+      when: kibana_xpack_maps_enabled | default(true)
+
+- name: Import Kibana saved objects
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Check if saved objects exist
+      find:
+        paths: /opt/kibana-assets
+        patterns: "*.ndjson"
+        recurse: yes
+      register: saved_objects_files
+    
+    - name: Import dashboards and visualizations
+      shell: |
+        curl -X POST "https://localhost:{{ kibana_port }}/api/saved_objects/_import?overwrite=true" \
+          -H "kbn-xsrf: true" \
+          -u elastic:{{ vault_elasticsearch_password }} \
+          --form file=@"{{ item.path }}" \
+          --insecure
+      loop: "{{ saved_objects_files.files }}"
+      when: saved_objects_files.files | length > 0
+      register: import_result
+      changed_when: "'success_count\":0' not in import_result.stdout"
+    
+    - name: Display import results
+      debug:
+        msg: "Imported {{ saved_objects_files.files | length }} saved object files"
+      when: saved_objects_files.files | length > 0
+
+- name: Create default index patterns
+  hosts: kibana_servers[0]
+  become: true
+  run_once: true
+  
+  tasks:
+    - name: Create syslog index pattern
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/syslog-*"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          attributes:
+            title: "syslog-*"
+            timeFieldName: "@timestamp"
+        validate_certs: false
+        status_code: [200, 201, 409]
+      register: syslog_pattern
+      failed_when: false
+    
+    - name: Set syslog as default index pattern
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/kibana/settings"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          changes:
+            "defaultIndex": "syslog-*"
+        validate_certs: false
+        status_code: [200, 201]
+      when: syslog_pattern.status in [200, 201]
+
+- name: Configure Kibana monitoring
+  hosts: kibana_servers
+  become: true
+  
+  tasks:
+    - name: Enable Kibana collection
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/kibana/settings"
+        method: POST
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        body_format: json
+        body:
+          changes:
+            "xpack.monitoring.kibana.collection.enabled": true
+        validate_certs: false
+        status_code: [200, 201]
+    
+    - name: Configure service restart policy
+      copy:
+        content: |
+          [Service]
+          Restart=always
+          RestartSec=10
+        dest: /etc/systemd/system/kibana.service.d/restart.conf
+      notify: reload systemd
+    
+    - name: Ensure Kibana service is enabled
+      systemd:
+        name: kibana
+        enabled: yes
+        daemon_reload: yes
+
+- name: Verify Kibana deployment
+  hosts: kibana_servers
+  become: true
+  
+  tasks:
+    - name: Test Kibana API
+      uri:
+        url: "https://localhost:{{ kibana_port }}/api/status"
+        method: GET
+        user: elastic
+        password: "{{ vault_elasticsearch_password }}"
+        validate_certs: false
+        return_content: yes
+      register: final_status
+    
+    - name: Verify all services are operational
+      assert:
+        that:
+          - final_status.json.status.overall.state == 'green'
+        success_msg: "✓ Kibana is healthy and operational"
+        fail_msg: "✗ Kibana health check failed"
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  
+  tasks:
+    - name: Display Kibana deployment summary
+      debug:
+        msg:
+          - "========================================="
+          - "Kibana Deployment Complete!"
+          - "========================================="
+          - "Servers deployed: {{ groups['kibana_servers'] | length }}"
+          - "Kibana nodes:"
+          - "{% for host in groups['kibana_servers'] %}"
+          - "  - {{ host }} ({{ hostvars[host].ansible_default_ipv4.address }})"
+          - "{% endfor %}"
+          - ""
+          - "Access URLs:"
+          - "{% for host in groups['kibana_servers'] %}"
+          - "  - https://{{ hostvars[host].ansible_default_ipv4.address }}:{{ kibana_port }}"
+          - "{% endfor %}"
+          - ""
+          - "Default credentials:"
+          - "  Username: elastic"
+          - "  Password: (stored in vault.yml)"
+          - ""
+          - "Spaces created:"
+          - "  - Network Operations"
+          - "  - Security Operations"
+          - ""
+          - "Index patterns configured: ✓"
+          - "Saved objects imported: ✓"
+          - "========================================="
